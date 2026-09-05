@@ -147,10 +147,10 @@ function enforceTranscriptHistory(plan: string, meetingStartTime: string): void 
 
 router.post(
   '/draft',
+  validateRequest({ body: draftSchema }),
   attachPlan(),
   enforceAiModelAccess,
   enforceAnalysisLimit(),
-  validateRequest({ body: draftSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { transcript, leadContext, model, meetingStartTime } = req.body;

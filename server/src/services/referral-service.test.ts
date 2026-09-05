@@ -18,6 +18,7 @@ const claimSet = vi.fn();
 const myClaimGet = vi.fn();
 const myClaimSet = vi.fn();
 const myClaimsList = vi.fn();
+const txClaimsSnap = vi.fn();
 
 const claimRef = (id: string, data: unknown) => ({
   id,
@@ -48,6 +49,26 @@ vi.mock('./firebase-admin.js', () => {
         set: registrySet,
         collection: () => claimsForCodeCollection,
       };
+      // Transactional claim path: service calls tx.get 3x in order
+      // (registry, myClaim, myClaims-count) then tx.set 2x (myClaim, claim).
+      const runTransaction = async (fn: (tx: any) => Promise<any>) => {
+        let getCalls = 0;
+        let setCalls = 0;
+        const tx = {
+          get: async (_ref: unknown) => {
+            getCalls += 1;
+            if (getCalls === 1) return registryGet();
+            if (getCalls === 2) return myClaimGet();
+            return txClaimsSnap();
+          },
+          set: (..._args: unknown[]) => {
+            setCalls += 1;
+            if (setCalls === 1) return myClaimSet(...(_args.slice(1) as [any]));
+            return claimSet(...(_args.slice(1) as [any]));
+          },
+        };
+        return fn(tx);
+      };
       return {
         collection: (name: string) => {
           if (name === 'referrals') {
@@ -58,6 +79,7 @@ vi.mock('./firebase-admin.js', () => {
           }
           throw new Error(`unexpected collection: ${name}`);
         },
+        runTransaction,
       };
     },
   };
@@ -75,7 +97,7 @@ const claimDoc = (benefit: string | null) => ({
 
 describe('referral-service', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   describe('generateReferralCode', () => {
@@ -157,7 +179,7 @@ describe('referral-service', () => {
     it('grants a meeting bonus to free users and records both documents', async () => {
       registryGet.mockResolvedValue(registryDoc('referrer-1'));
       myClaimGet.mockResolvedValueOnce(claimDoc(null));
-      myClaimsList.mockResolvedValueOnce([]);
+      txClaimsSnap.mockResolvedValueOnce({ size: 0, docs: [] });
       myClaimSet.mockResolvedValueOnce(undefined);
       claimSet.mockResolvedValueOnce(undefined);
 
@@ -171,7 +193,7 @@ describe('referral-service', () => {
     it('grants a free month to paid users', async () => {
       registryGet.mockResolvedValue(registryDoc('referrer-1'));
       myClaimGet.mockResolvedValueOnce(claimDoc(null));
-      myClaimsList.mockResolvedValueOnce([]);
+      txClaimsSnap.mockResolvedValueOnce({ size: 0, docs: [] });
 
       const result = await claimReferral('user-1', 'DF-ABCD2345', 'pro');
       expect(result.status).toBe('claimed');
@@ -191,19 +213,19 @@ describe('referral-service', () => {
     it('rejects claims beyond the per-user cap', async () => {
       registryGet.mockResolvedValue(registryDoc('referrer-1'));
       myClaimGet.mockResolvedValueOnce(claimDoc(null));
-      myClaimsList.mockResolvedValueOnce(new Array(10).fill({ id: 'x' }));
+      txClaimsSnap.mockResolvedValueOnce({ size: 10, docs: new Array(10).fill({ id: 'x' }) });
 
       const result = await claimReferral('user-1', 'DF-ABCD2345', 'free');
       expect(result.status).toBe('limit_reached');
     });
 
-    it('fails open to a meeting bonus when Firestore is unavailable', async () => {
+    it('fails closed when Firestore is unavailable (no benefit granted)', async () => {
       registryGet.mockResolvedValue(registryDoc('referrer-1'));
       myClaimGet.mockRejectedValueOnce(new Error('not configured'));
 
       const result = await claimReferral('user-1', 'DF-ABCD2345', 'free');
-      expect(result.status).toBe('claimed');
-      expect(result.benefit).toBe('meeting_bonus');
+      expect(result.status).toBe('invalid_code');
+      expect(result.benefit).toBeNull();
     });
   });
 

@@ -124,7 +124,7 @@ async function listItems<T>(uid: string, name: string, limit = MAX_LIST_ITEMS): 
   const items: T[] = [];
   snap.forEach((doc) => items.push(doc.data() as T));
   items.sort(
-    (a, b) => getSortTime(b as Record<string, unknown>) - getSortTime(a as Record<string, unknown>),
+    (a, b) => getSortTime(b as unknown as Record<string, unknown>) - getSortTime(a as unknown as Record<string, unknown>),
   );
   return items.slice(0, limit);
 }
@@ -164,7 +164,7 @@ export async function getMeetingDetail(uid: string, meetingId: string): Promise<
   const analysisDoc = await collection(uid, 'analyses').where('meetingId', '==', meetingId).get();
   const docs = analysisDoc.docs.map((d) => d.data() as SyncAnalysis);
   docs.sort(
-    (a, b) => getSortTime(b as Record<string, unknown>) - getSortTime(a as Record<string, unknown>),
+    (a, b) => getSortTime(b as unknown as Record<string, unknown>) - getSortTime(a as unknown as Record<string, unknown>),
   );
   const analysis: SyncAnalysis | null = docs.length === 0 ? null : docs[0];
   return {

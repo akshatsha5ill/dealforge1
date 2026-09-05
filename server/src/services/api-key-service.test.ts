@@ -1,10 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const store = vi.hoisted(() => new Map<string, Map<string, unknown>>());
+const subStore = vi.hoisted(() => new Map<string, unknown>());
 
 vi.mock('../services/firebase-admin.js', () => ({
   getFirebaseFirestore: () => ({
     collection: (name: string) => {
+      if (name === 'users') {
+        return {
+          doc: (uid: string) => ({
+            collection: () => ({
+              doc: () => ({
+                get: async () => ({
+                  exists: subStore.has(uid),
+                  data: () => subStore.get(uid),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
       if (!store.has(name)) store.set(name, new Map());
       const coll = store.get(name)!;
       return {
@@ -36,6 +51,14 @@ import { createApiKey, listApiKeys, revokeApiKey, findApiKeyOwner, hashApiKey, g
 
 beforeEach(() => {
   store.clear();
+  subStore.clear();
+  // Default: active Pro subscription so findApiKeyOwner passes the paid-plan gate.
+  subStore.set('user-1', {
+    plan: 'pro',
+    status: 'active',
+    currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
 });
 
 describe('generateApiKey / hashApiKey', () => {

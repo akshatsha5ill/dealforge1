@@ -71,6 +71,7 @@ const mockFetch = (url: string, options: { body?: string } = {}) => {
 describe('email-oauth service', () => {
   beforeEach(() => {
     __docRefs.clear();
+    oauth.__clearOAuthStateCache();
     vi.stubGlobal('fetch', vi.fn().mockImplementation(mockFetch));
   });
 
@@ -87,7 +88,12 @@ describe('email-oauth service', () => {
       expect(parsed.searchParams.get('access_type')).toBe('offline');
       const state = parsed.searchParams.get('state');
       expect(state).toBeTruthy();
-      expect(JSON.parse(decrypt(state!))).toEqual({ uid: 'user-1', redirect: 'https://app.example/settings' });
+      expect(JSON.parse(decrypt(state!))).toEqual(
+        expect.objectContaining({ uid: 'user-1', redirect: 'https://app.example/settings' }),
+      );
+      const payload = JSON.parse(decrypt(state!)) as { nonce?: string; exp?: number };
+      expect(typeof payload.nonce).toBe('string');
+      expect(typeof payload.exp).toBe('number');
     });
 
     it('builds an Outlook authorize URL', () => {
@@ -107,8 +113,13 @@ describe('email-oauth service', () => {
   });
 
   describe('handleOAuthCallback', () => {
+    const makeState = () => {
+      const url = oauth.buildOAuthStartUrl('gmail', 'user-1', 'https://app.example/settings');
+      return new URL(url).searchParams.get('state')!;
+    };
+
     it('exchanges the code, stores encrypted tokens, and returns the redirect', async () => {
-      const state = (await import('../utils/crypto.js')).encrypt(JSON.stringify({ uid: 'user-1', redirect: 'https://app.example/settings' }));
+      const state = makeState();
       const result = await oauth.handleOAuthCallback('gmail', 'code-1', state);
       expect(result.email).toBe('user@example.com');
       expect(result.redirect).toBe('https://app.example/settings');
@@ -128,7 +139,8 @@ describe('email-oauth service', () => {
 
   describe('getValidAccessToken', () => {
     it('returns the stored access token', async () => {
-      const state = (await import('../utils/crypto.js')).encrypt(JSON.stringify({ uid: 'user-1', redirect: 'https://app.example/settings' }));
+      const url = oauth.buildOAuthStartUrl('gmail', 'user-1', 'https://app.example/settings');
+      const state = new URL(url).searchParams.get('state')!;
       await oauth.handleOAuthCallback('gmail', 'code-1', state);
       const tokens = await oauth.getValidAccessToken('user-1', 'gmail');
       expect(tokens.accessToken).toBe('access-123');
@@ -161,7 +173,8 @@ describe('email-oauth service', () => {
     });
 
     it('disconnects an integration', async () => {
-      const state = (await import('../utils/crypto.js')).encrypt(JSON.stringify({ uid: 'user-1', redirect: 'https://app.example/settings' }));
+      const url = oauth.buildOAuthStartUrl('gmail', 'user-1', 'https://app.example/settings');
+      const state = new URL(url).searchParams.get('state')!;
       await oauth.handleOAuthCallback('gmail', 'code-1', state);
       await oauth.disconnectIntegration('user-1', 'gmail');
       expect(__docRefs.has('user-1:gmail')).toBe(false);

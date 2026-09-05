@@ -23,7 +23,15 @@ vi.mock('../services/firebase-admin.js', () => {
             if (colName === 'subscription') {
               return {
                 doc: () => ({
-                  get: vi.fn().mockResolvedValue({ exists: true, data: () => ({ plan: 'pro' }) }),
+                  get: vi.fn().mockResolvedValue({
+                    exists: true,
+                    data: () => ({
+                      plan: 'pro',
+                      status: 'active',
+                      currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+                      updatedAt: new Date().toISOString(),
+                    }),
+                  }),
                 }),
               };
             }

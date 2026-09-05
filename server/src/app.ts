@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import * as Sentry from '@sentry/node';
 import authRoutes from './routes/auth.js';
 import zoomRoutes from './routes/zoom.js';
@@ -99,9 +99,9 @@ app.use(helmet({
 app.use(requestId);
 
 // Key authenticated users by Firebase uid so limits are per-user,
-// falling back to IP for unauthenticated requests.
+// falling back to normalized IP for unauthenticated requests.
 const uidKeyGenerator = (req: express.Request): string =>
-  (req as unknown as { user?: { uid?: string } }).user?.uid || req.ip || 'unknown';
+  (req as unknown as { user?: { uid?: string } }).user?.uid || (req.ip ? ipKeyGenerator(req.ip) : 'unknown');
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -203,7 +203,8 @@ const publicApiLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip || 'unknown',
+  keyGenerator: (req) =>
+    (req.headers['x-api-key'] as string | undefined) || (req.ip ? ipKeyGenerator(req.ip) : 'unknown'),
   message: { error: 'API rate limit exceeded. Please slow down your requests.' }
 });
 

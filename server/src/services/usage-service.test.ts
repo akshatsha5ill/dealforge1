@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getMonthKey, getMonthlyAnalysisCount, recordAnalysisUsage } from './usage-service.js';
+import { getMonthKey, getMonthlyAnalysisCount, getMonthlyAnalysisCountWithFallback, recordAnalysisUsage } from './usage-service.js';
 
 const setFn = vi.fn();
 const listFn = vi.fn();
@@ -50,9 +50,14 @@ describe('usage-service', () => {
       expect(count).toBe(0);
     });
 
-    it('fails open when Firestore is unavailable', async () => {
+    it('fails closed when Firestore is unavailable (enforcement path throws)', async () => {
       listFn.mockRejectedValueOnce(new Error('not configured'));
-      const count = await getMonthlyAnalysisCount('user-1', '2026-08');
+      await expect(getMonthlyAnalysisCount('user-1', '2026-08')).rejects.toThrow('not configured');
+    });
+
+    it('fails open on the display/diagnostic path', async () => {
+      listFn.mockRejectedValueOnce(new Error('not configured'));
+      const count = await getMonthlyAnalysisCountWithFallback('user-1', '2026-08');
       expect(count).toBe(0);
     });
   });

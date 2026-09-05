@@ -20,7 +20,7 @@ function createApp(uid: string | null) {
   const app = express();
   app.use(express.json());
   app.use((req: any, _res: any, next: any) => {
-    if (uid) req.user = { uid };
+    if (uid) req.user = { uid, email_verified: true };
     next();
   });
   app.use('/referrals', referralRouter);

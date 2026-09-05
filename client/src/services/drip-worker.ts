@@ -40,8 +40,10 @@ class DripCampaignWorker {
     }
 
     // Suppression-list gate: mirror of server suppression-service check() — must run before send.
+    // @vite-ignore: server module (firebase-admin) must never be bundled into the
+    // browser build; the catch below handles the runtime resolution failure.
     try {
-      const mod = await import('../../../server/src/services/suppression-service');
+      const mod = await import(/* @vite-ignore */ '../../../server/src/services/suppression-service');
       const check = (mod as unknown as { check?: (email: string) => Promise<boolean> })?.check;
       if (typeof check === 'function' && (await check(lead.email))) {
         await db.drip_campaigns.update(campaign.id, {

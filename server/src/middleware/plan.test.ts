@@ -48,7 +48,23 @@ describe('plan middleware', () => {
   });
 
   const setPlan = (plan: string | null) => {
-    __planRef.mockResolvedValueOnce(plan ? { exists: true, data: () => ({ plan }) } : { exists: false });
+    if (!plan) {
+      __planRef.mockResolvedValueOnce({ exists: false });
+      return;
+    }
+    if (plan === 'free' || (plan !== 'pro' && plan !== 'enterprise')) {
+      __planRef.mockResolvedValueOnce({ exists: true, data: () => ({ plan }) });
+      return;
+    }
+    __planRef.mockResolvedValueOnce({
+      exists: true,
+      data: () => ({
+        plan,
+        status: 'active',
+        currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+    });
   };
 
   describe('getPlanForUser', () => {

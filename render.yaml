@@ -23,9 +23,39 @@ services:
         sync: false
       - key: ZOOM_WEBHOOK_SECRET_TOKEN
         sync: false
+      - key: ZOOM_REDIRECT_URI
+        sync: false
+      - key: ZOOM_SDK_KEY
+        sync: false
+      - key: ZOOM_SDK_SECRET
+        sync: false
+      - key: ZOOM_VERIFY_TOKEN
+        sync: false
+      - key: ALLOW_PREVIEW_ORIGINS
+        value: false
       - key: SESSION_SECRET
         sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: TRACKING_SECRET
+        sync: false
+      - key: TRACKING_BASE_URL
+        sync: false
       - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: DealForge <noreply@dealforge.app>
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_REDIRECT_BASE
+        sync: false
+      - key: UNSUBSCRIBE_BASE_URL
         sync: false
       - key: FIREBASE_PROJECT_ID
         sync: false
@@ -33,7 +63,15 @@ services:
         sync: false
       - key: FIREBASE_PRIVATE_KEY
         sync: false
+      - key: DODO_PAYMENTS_API_KEY
+        sync: false
+      - key: DODO_PAYMENTS_WEBHOOK_KEY
+        sync: false
       - key: DODO_PRO_PRODUCT_ID
         sync: false
       - key: DODO_ENTERPRISE_PRODUCT_ID
-        sync: false 
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
