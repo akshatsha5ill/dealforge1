@@ -57,7 +57,12 @@ export default function MeetingDetailPage() {
     setUsageExceeded(false);
     setModelGated(false);
     try {
-      const transcriptText = transcript?.fullText || 'No transcript available for this meeting.';
+      if (!transcript?.fullText?.trim()) {
+        setError('No transcript available for this meeting. Analysis requires transcript text.');
+        setLoading(false);
+        return;
+      }
+      const transcriptText = transcript.fullText;
       const apiKey = openAiKey || anthropicKey;
       if (!apiKey) {
         trackEvent('analyze_blocked_no_key');
@@ -87,20 +92,32 @@ export default function MeetingDetailPage() {
       const result = await analyzeMeeting(transcriptText, id, apiKey, model);
       trackEvent('analyze_succeeded');
 
-      const actionItems = result.actionItems ? result.actionItems.map((item: any) => typeof item === 'string' ? item : item.task) : [];
-      const sentimentScore = result.sentiment?.score ?? 0;
+      const aiLeads = (result as any).leads || [];
+      const actionItems = result.actionItems ? result.actionItems.map((item: any) => {
+        if (typeof item === 'string') return item;
+        const task = item?.task ? String(item.task) : '';
+        const assignee = typeof item?.assignee === 'string' ? item.assignee.trim() : '';
+        if (!task) return assignee ? `Unassigned task (Assigned to: ${assignee})` : '';
+        return assignee && assignee.toLowerCase() !== 'unassigned' ? `${task} (Assigned to: ${assignee})` : task;
+      }).filter(Boolean) : [];
+      const rawSentimentScore = Number(result.sentiment?.score ?? 0);
+      const clampedSentimentScore = Number.isFinite(rawSentimentScore) ? Math.min(100, Math.max(0, rawSentimentScore)) : 0;
+      const normalizedSentiment = clampedSentimentScore / 100;
+      const overall = result.sentiment?.overall === 'positive' || result.sentiment?.overall === 'negative' || result.sentiment?.overall === 'neutral' ? result.sentiment.overall : 'neutral';
+      const validLeadScores = aiLeads.map((l: any) => Number(l?.score)).filter((n: number) => Number.isFinite(n) && n >= 0 && n <= 100);
+      const leadScore = validLeadScores.length > 0 ? Math.max(...validLeadScores) : 0;
       const analysisRecord: Analysis = {
         id: `analysis_${id}`,
         meetingId: id,
         summary: result.summary,
         actionItems,
         sentiment: {
-          positive: sentimentScore > 0 ? sentimentScore : 0,
-          neutral: sentimentScore === 0 ? 1 : 0,
-          negative: sentimentScore < 0 ? Math.abs(sentimentScore) : 0,
-          overall: result.sentiment?.overall || 'neutral',
+          positive: overall === 'positive' ? normalizedSentiment : 0,
+          neutral: overall === 'neutral' ? 1 : 0,
+          negative: overall === 'negative' ? normalizedSentiment : 0,
+          overall,
         },
-        leadScore: 50,
+        leadScore,
         emailDraft: null,
         modelUsed: model,
         analyzedAt: new Date().toISOString(),
@@ -109,7 +126,7 @@ export default function MeetingDetailPage() {
       setAnalysis(analysisRecord);
 
       // Auto Lead Creation & Scoring (Abstracted)
-      await leadsDB.createLeadsFromAnalysis(id, (result as any).leads || []);
+      await leadsDB.createLeadsFromAnalysis(id, aiLeads);
     } catch (err) {
       console.error('Analysis failed:', err);
       setError('Failed to generate analysis. Check your API key in Settings.');
@@ -230,8 +247,8 @@ export default function MeetingDetailPage() {
                     )}
                     <button
                       onClick={handleAnalyze}
-                      disabled={loading || transcriptExpired}
-                      style={{ padding: '10px 16px', backgroundColor: 'var(--accent-primary)', color: 'var(--bg-primary)', border: 'none', borderRadius: '8px', cursor: loading || transcriptExpired ? 'not-allowed' : 'pointer', fontWeight: 600, width: '100%', opacity: loading || transcriptExpired ? 0.5 : 1, fontSize: '14px', transition: 'opacity 0.2s' }}
+                      disabled={loading || transcriptExpired || !transcript?.fullText?.trim()}
+                      style={{ padding: '10px 16px', backgroundColor: 'var(--accent-primary)', color: 'var(--bg-primary)', border: 'none', borderRadius: '8px', cursor: loading || transcriptExpired || !transcript?.fullText?.trim() ? 'not-allowed' : 'pointer', fontWeight: 600, width: '100%', opacity: loading || transcriptExpired || !transcript?.fullText?.trim() ? 0.5 : 1, fontSize: '14px', transition: 'opacity 0.2s' }}
                     >
                       {loading ? 'Analyzing...' : transcriptExpired ? 'Upgrade to analyze older meetings' : 'Generate Summary'}
                     </button>

@@ -94,40 +94,60 @@ export async function getMyClaims(uid: string): Promise<ReferralClaim[]> {
 }
 
 export async function claimReferral(uid: string, rawCode: string, plan: 'free' | 'pro' | 'enterprise'): Promise<ClaimResult> {
-  const code = rawCode.trim().toUpperCase();
+  const code = (typeof rawCode === 'string' ? rawCode : '').trim().toUpperCase();
   if (!isReferralCodeValid(code)) {
     return { status: 'invalid_code', benefit: null, code };
   }
 
-  const myCode = await ensureReferralCode(uid);
-  if (code === myCode) {
-    return { status: 'self_referral', benefit: null, code };
-  }
+  try {
+    const myCode = await ensureReferralCode(uid);
+    if (code === myCode) {
+      return { status: 'self_referral', benefit: null, code };
+    }
 
-  return withFallback({ status: 'claimed', benefit: 'meeting_bonus', code } as ClaimResult, async () => {
     const firestore = getFirebaseFirestore();
+    const registryRef = firestore.collection('referrals').doc(code);
     const myClaimsRef = firestore
       .collection('users').doc(uid)
       .collection('referrals').doc('claimed').collection('codes');
-
-    const existing = await myClaimsRef.doc(code).get();
-    if (existing.exists) {
-      const data = existing.data() as { benefit?: ReferralBenefitType } | undefined;
-      return { status: 'already_claimed', benefit: data?.benefit || 'meeting_bonus', code };
-    }
-
-    const claimsList = await myClaimsRef.listDocuments();
-    if (claimsList.length >= MAX_CLAIMS_PER_USER) {
-      return { status: 'limit_reached', benefit: null, code };
-    }
-
+    const myClaimRef = myClaimsRef.doc(code);
+    const claimRef = firestore.collection('referrals').doc(code).collection('claims').doc(uid);
     const benefit: ReferralBenefitType = plan === 'free' ? 'meeting_bonus' : 'free_month';
     const claimedAt = new Date().toISOString();
 
-    await myClaimsRef.doc(code).set({ claimedAt, benefit });
-    await firestore.collection('referrals').doc(code).collection('claims').doc(uid).set({ claimedAt, benefit });
-    return { status: 'claimed', benefit, code };
-  });
+    const result = await firestore.runTransaction(async (tx: any) => {
+      // Must fetch referrals/{code} — unregistered DF-XXXXXXXX codes are brute-force attempts.
+      const regSnap = await tx.get(registryRef);
+      if (!regSnap.exists) {
+        return { status: 'invalid_code', benefit: null, code } as ClaimResult;
+      }
+      if ((regSnap.data() as { uid?: string } | undefined)?.uid === uid) {
+        return { status: 'self_referral', benefit: null, code } as ClaimResult;
+      }
+
+      const existing = await tx.get(myClaimRef);
+      if (existing.exists) {
+        const data = existing.data() as { benefit?: ReferralBenefitType } | undefined;
+        return { status: 'already_claimed', benefit: data?.benefit || 'meeting_bonus', code } as ClaimResult;
+      }
+
+      const claimsSnap = await tx.get(myClaimsRef);
+      const count = typeof claimsSnap?.size === 'number' ? claimsSnap.size : (claimsSnap?.docs?.length ?? 0);
+      if (count >= MAX_CLAIMS_PER_USER) {
+        return { status: 'limit_reached', benefit: null, code } as ClaimResult;
+      }
+
+      tx.set(myClaimRef, { claimedAt, benefit });
+      tx.set(claimRef, { claimedAt, benefit });
+      return { status: 'claimed', benefit, code } as ClaimResult;
+    });
+
+    return result;
+  } catch (err) {
+    // Fail-closed: never grant a benefit when Firestore is unavailable.
+    log.error('Referral claim failed, failing closed', { error: err, uid, code });
+    return { status: 'invalid_code', benefit: null, code };
+  }
 }
 
 export async function getActiveMeetingBonus(uid: string): Promise<number> {

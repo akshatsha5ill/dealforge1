@@ -5,9 +5,25 @@ import './index.css'
 import App from './App.tsx'
 
 if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
+  const scrub = (obj: any): any => {
+    if (typeof obj === 'string') return obj.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
+    if (!obj || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(scrub);
+    const out: Record<string, any> = { ...obj };
+    for (const k of Object.keys(out)) {
+      if (/apiKey|transcript|email/i.test(k)) out[k] = '[Redacted]';
+      else out[k] = scrub(out[k]);
+    }
+    return out;
+  };
   Sentry.init({
     dsn: import.meta.env.VITE_SENTRY_DSN,
     tracesSampleRate: 0.1,
+    beforeSend(event) {
+      if (event.request?.data) event.request.data = scrub(event.request.data);
+      if (event.extra) event.extra = scrub(event.extra);
+      return event;
+    },
   });
 }
 

@@ -16,7 +16,15 @@ export const sanitizeObject = <T>(obj: T): T => {
   if (typeof obj === 'object' && obj !== null) {
     const sanitized: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-      sanitized[key] = sanitizeObject(value);
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        continue;
+      }
+      Object.defineProperty(sanitized, key, {
+        value: sanitizeObject(value),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return sanitized as T;
   }

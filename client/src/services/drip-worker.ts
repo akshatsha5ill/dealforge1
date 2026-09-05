@@ -19,6 +19,42 @@ class DripCampaignWorker {
       return;
     }
 
+    // Compliance gate: require explicit opt-in. Skip (do not send) if unsubscribed.
+    const consentStatus = (lead as unknown as Record<string, unknown>)?.consentStatus;
+    if (consentStatus !== 'opted_in') {
+      await db.drip_campaigns.update(campaign.id, {
+        status: 'suppressed',
+        error: `Skipped: consentStatus is '${String(consentStatus ?? 'missing')}' (require opted_in; unsubscribed/opted_out must not send)`,
+        nextRunAt: null,
+      });
+      return;
+    }
+    if ((lead as unknown as Record<string, unknown>)?.unsubscribedAt) {
+      await db.drip_campaigns.update(campaign.id, {
+        status: 'suppressed',
+        error: 'Skipped: lead has unsubscribedAt set',
+        nextRunAt: null,
+      });
+      return;
+    }
+
+    // Suppression-list gate: mirror of server suppression-service check() — must run before send.
+    try {
+      const mod = await import('../../../server/src/services/suppression-service');
+      const check = (mod as unknown as { check?: (email: string) => Promise<boolean> })?.check;
+      if (typeof check === 'function' && (await check(lead.email))) {
+        await db.drip_campaigns.update(campaign.id, {
+          status: 'suppressed',
+          error: 'Skipped: email is on suppression list (bounce/complaint/unsubscribe/stop-on-reply/manual)',
+          nextRunAt: null,
+        });
+        return;
+      }
+    } catch {
+      // Browser bundle cannot always resolve the server suppression-service (firebase-admin);
+      // consent gate above already fail-closes. Server-side send path still enforces check().
+    }
+
     const storeState = useStore.getState();
     const aiKey = storeState.openAiKey || storeState.anthropicKey || storeState.geminiKey;
     const aiModel = storeState.openAiKey ? 'openai' : storeState.anthropicKey ? 'anthropic' : 'gemini';
@@ -34,13 +70,10 @@ class DripCampaignWorker {
     try {
       let transcriptContext = '';
       try {
-        const transcripts = await db.transcripts.toArray();
-        const leadMeetings = await db.meetings.toArray();
-        const meetingForLead = leadMeetings.find(m => transcripts.some(t => t.meetingId === m.id));
-        if (meetingForLead) {
-          const transcript = transcripts.find(t => t.meetingId === meetingForLead.id);
-          transcriptContext = transcript?.fullText || '';
-        }
+        const transcript = lead?.meetingId
+          ? await db.transcripts.where('meetingId').equals(lead.meetingId).first()
+          : undefined;
+        transcriptContext = transcript?.fullText || '';
       } catch (err) {
         console.error("Failed to load transcript for drip worker", err);
       }

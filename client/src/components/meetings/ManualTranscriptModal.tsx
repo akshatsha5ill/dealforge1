@@ -47,6 +47,11 @@ export const ManualTranscriptModal: React.FC<ManualTranscriptModalProps> = ({ on
     setSubmitting(true);
     try {
       const parsed = parseTranscriptFile(fileName || 'transcript.txt', text);
+      if (!parsed.segments.length || parsed.fullText.trim().length < 20) {
+        setError('Transcript is empty or too short. Paste at least 20 characters of meeting content.');
+        setSubmitting(false);
+        return;
+      }
       const id = `meeting_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const now = new Date().toISOString();
       const meeting: Meeting = {

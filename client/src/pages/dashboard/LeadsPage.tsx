@@ -7,8 +7,11 @@ import { useStore } from '../../store';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { toast } from '../../components/common/Toast';
 import { trackEvent } from '../../services/usage-analytics';
+import { apiClient } from '../../services/api/client';
 
-const stages = ['Discovery', 'Demo', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+const stages = ['Lead Identified', 'Discovery', 'Demo', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
+
+const normalizeStage = (s: string | undefined | null) => (s ?? '').toLowerCase().replace(/[\s-]+/g, '_');
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -34,7 +37,7 @@ export default function LeadsPage() {
   }, []);
 
   const filtered = leads.filter((l) => {
-    const matchesStage = filter === 'all' || l.stage === filter;
+    const matchesStage = filter === 'all' || normalizeStage(l.stage) === normalizeStage(filter);
     const matchesSearch = l.name?.toLowerCase().includes(search.toLowerCase()) || l.company?.toLowerCase().includes(search.toLowerCase()) || l.email?.toLowerCase().includes(search.toLowerCase());
     return matchesStage && matchesSearch;
   });
@@ -48,33 +51,26 @@ export default function LeadsPage() {
         return;
       }
       
-      const apiKey = openAiKey || anthropicKey;
+      const apiKey = geminiKey || openAiKey || anthropicKey;
       if (!apiKey) {
         toast.info('Please set an API key in Settings before rescoring.');
         return;
       }
-      const model = openAiKey ? 'openai' : 'anthropic';
+      const model = geminiKey ? 'gemini' : openAiKey ? 'openai' : 'anthropic';
       
-      const res = await fetch('/api/ai/score', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transcript: (transcript as any).fullText || (transcript as any).content || '',
-          leadContext: {
-            name: lead.name,
-            company: lead.company,
-            role: lead.role,
-            stage: lead.stage
-          },
-          model,
-          apiKey
-        })
+      const data = await apiClient.post<{ score: { score: number; reasoning?: string } }>('/ai/score', {
+        transcript: (transcript as any).fullText || (transcript as any).content || '',
+        leadContext: {
+          name: lead.name,
+          company: lead.company,
+          role: lead.role,
+          stage: lead.stage
+        },
+        model,
+        apiKey
       });
       
-      if (!res.ok) throw new Error('Rescore failed');
-      const data = await res.json();
-      
-      if (data.score && data.score.score) {
+      if (data.score && data.score.score != null) {
         const newScore = data.score.score;
         trackEvent('lead_rescored');
         await db.leads.update(lead.id, { score: newScore });
@@ -152,7 +148,7 @@ export default function LeadsPage() {
           All ({leads.length})
         </button>
         {stages.map((s) => {
-          const count = leads.filter((l) => l.stage === s).length;
+          const count = leads.filter((l) => normalizeStage(l.stage) === normalizeStage(s)).length;
           return (
             <button key={s} onClick={() => setFilter(s)} style={{ padding: '6px 14px', borderRadius: '20px', border: '1px solid var(--border)', backgroundColor: filter === s ? 'var(--accent-primary)' : 'var(--bg-secondary)', color: filter === s ? 'var(--bg-primary)' : 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontWeight: 500, transition: 'all 0.2s' }}>
               {s} ({count})

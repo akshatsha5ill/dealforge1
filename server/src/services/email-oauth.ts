@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { config } from '../config.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { getFirebaseFirestore } from './firebase-admin.js';
@@ -58,9 +59,31 @@ const getProviderCredentials = (provider: EmailProvider) => {
 const getRedirectUri = (provider: EmailProvider) =>
   `${config.email.oauthRedirectBase}/${provider}/callback`;
 
+export const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+// FIX-SEC-S3: single-use OAuth state cache. buildOAuthStartUrl() stores the
+// nonce here; parseOAuthState() consumes it. In-memory only — sufficient for
+// single-instance; use Redis/shared store if scaled horizontally.
+const pendingOAuthStates = new Map<string, number>();
+
+function pruneOAuthStates(now = Date.now()): void {
+  for (const [nonce, exp] of pendingOAuthStates) {
+    if (exp <= now) pendingOAuthStates.delete(nonce);
+  }
+}
+
+// Test-only helper to reset single-use cache between tests.
+export const __clearOAuthStateCache = (): void => {
+  pendingOAuthStates.clear();
+};
+
 export const buildOAuthStartUrl = (provider: EmailProvider, uid: string, redirect: string): string => {
   const { clientId } = getProviderCredentials(provider);
-  const state = encrypt(JSON.stringify({ uid, redirect }));
+  pruneOAuthStates();
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const exp = Date.now() + OAUTH_STATE_TTL_MS;
+  pendingOAuthStates.set(nonce, exp);
+  const state = encrypt(JSON.stringify({ uid, redirect, nonce, exp }));
 
   if (provider === 'gmail') {
     const params = new URLSearchParams({
@@ -88,10 +111,22 @@ export const buildOAuthStartUrl = (provider: EmailProvider, uid: string, redirec
 
 export const parseOAuthState = (state: string): { uid: string; redirect: string } => {
   try {
-    const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string };
+    const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
     if (!parsed.uid) throw new Error('Missing uid in state');
+    // FIX-SEC-S3: require nonce + expiry to block state replay.
+    if (!parsed.nonce || typeof parsed.exp !== 'number') throw new Error('Missing nonce/exp in state');
+    if (Date.now() > parsed.exp) {
+      pendingOAuthStates.delete(parsed.nonce);
+      throw new Error('Expired OAuth state');
+    }
+    pruneOAuthStates();
+    const expectedExp = pendingOAuthStates.get(parsed.nonce);
+    if (!expectedExp) throw new Error('Unknown or reused OAuth state');
+    // Consume single-use: replay of the same state must fail.
+    pendingOAuthStates.delete(parsed.nonce);
     return { uid: parsed.uid, redirect: parsed.redirect || '' };
-  } catch {
+  } catch (err) {
+    if (err instanceof AppError) throw err;
     throw new AppError('Invalid OAuth state', 400);
   }
 };

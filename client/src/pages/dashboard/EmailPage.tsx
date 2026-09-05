@@ -11,6 +11,7 @@ import { ComposeEmailCard } from '../../components/email/ComposeEmailCard';
 import { EmailCampaignCard } from '../../components/email/EmailCampaignCard';
 import { DripCampaignCard } from '../../components/email/DripCampaignCard';
 import { confirm } from '../../components/common/ConfirmDialog';
+import { toast } from '../../components/common/Toast';
 import { EmailSequenceStep } from '../../types';
 import { EmailCampaign, Lead, DripCampaign } from '../../types';
 import { getEmailIntegrationStatus, IntegrationInfo } from '../../services/email-integration';
@@ -185,15 +186,10 @@ export default function EmailPage() {
       const lead = leads.find(l => l.id === form.leadId);
       let transcriptContext = '';
       try {
-        const transcripts = await db.transcripts.toArray();
-        const leadMeetings = await db.meetings.toArray();
-        const meetingForLead = leadMeetings.find(m =>
-          transcripts.some(t => t.meetingId === m.id)
-        );
-        if (meetingForLead) {
-          const transcript = transcripts.find(t => t.meetingId === meetingForLead.id);
-          transcriptContext = transcript?.fullText || '';
-        }
+        const transcript = lead?.meetingId
+          ? await db.transcripts.where('meetingId').equals(lead.meetingId).first()
+          : undefined;
+        transcriptContext = transcript?.fullText || '';
       } catch (err) {
         console.error("Failed to load transcript context for AI draft", err);
         useStore.getState().setError("Failed to load transcript context for AI. Drafting with limited context.");
@@ -295,6 +291,14 @@ export default function EmailPage() {
           }),
         });
 
+        if (!res.ok) {
+          let errText = '';
+          try { errText = await res.text(); } catch {}
+          console.error('Send failed:', res.status, errText);
+          toast.error('Failed to send email. Draft kept open.');
+          return;
+        }
+
         const campaign = {
           id: campaignId,
           leadId: form.leadId,
@@ -309,16 +313,14 @@ export default function EmailPage() {
         };
         await db.email_campaigns.put(campaign);
 
-        if (res.ok) {
-          await db.email_tracking.put({
-            id: crypto.randomUUID(),
-            campaignId: campaign.id,
-            opens: 0,
-            clicks: 0,
-            replied: 0,
-            lastActivity: null,
-          });
-        }
+        await db.email_tracking.put({
+          id: crypto.randomUUID(),
+          campaignId: campaign.id,
+          opens: 0,
+          clicks: 0,
+          replied: 0,
+          lastActivity: null,
+        });
       }
 
       setForm({ leadId: '', subject: '', body: '', type: 'follow_up', sequence: [] });
@@ -327,6 +329,7 @@ export default function EmailPage() {
       loadData();
     } catch (err) {
       console.error('Send failed:', err);
+      toast.error('Failed to send email. Draft kept open.');
     } finally {
       setSendLoading(false);
     }
@@ -366,13 +369,9 @@ export default function EmailPage() {
     if (!lead) return;
     try {
       const token = await auth.currentUser?.getIdToken();
-      const baseUrl = window.location.origin;
-      const uid = auth.currentUser?.uid || '';
-      // Only append if not already tracked. Simple check:
-      let bodyHtml = campaign.body;
-      if (!bodyHtml.includes('/api/tracking/open/')) {
-        bodyHtml += `<img src="${baseUrl}/api/tracking/open/${campaign.id}?uid=${uid}" width="1" height="1" style="display:none;" />`;
-      }
+      // Tracking (open pixel + click wrap) is injected server-side in
+      // routes/email.ts using canonical TRACKING_BASE_URL + signed uid.
+      // Do not inject here to avoid double pixel, wrong host, raw uid leak.
       const res = await fetch('/api/email/send', {
         method: 'POST',
         headers: { 
@@ -382,7 +381,7 @@ export default function EmailPage() {
         body: JSON.stringify({
           to: lead.email,
           subject: campaign.subject,
-          body: bodyHtml,
+          body: campaign.body,
           leadId: campaign.leadId,
           campaignId: campaign.id,
           emailApiKey: useStore.getState().resendKey,
@@ -390,26 +389,33 @@ export default function EmailPage() {
         }),
       });
 
+      if (!res.ok) {
+        let errText = '';
+        try { errText = await res.text(); } catch {}
+        console.error('Send draft failed:', res.status, errText);
+        toast.error('Failed to send draft. Draft kept open.');
+        return;
+      }
+
       await db.email_campaigns.put({
         ...campaign,
         status: 'sent',
         sentAt: Date.now(),
       });
 
-      if (res.ok) {
-        await db.email_tracking.put({
-          id: crypto.randomUUID(),
-          campaignId: campaign.id,
-          opens: 0,
-          clicks: 0,
-          replied: 0,
-          lastActivity: null,
-        });
-      }
+      await db.email_tracking.put({
+        id: crypto.randomUUID(),
+        campaignId: campaign.id,
+        opens: 0,
+        clicks: 0,
+        replied: 0,
+        lastActivity: null,
+      });
 
       loadData();
     } catch (err) {
       console.error('Send draft failed:', err);
+      toast.error('Failed to send draft. Draft kept open.');
     }
   };
 

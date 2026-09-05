@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { validateRequest } from 'zod-express-middleware';
 import { analyzeMeeting } from '../services/ai-service.js';
@@ -61,6 +62,7 @@ router.post(
 const scoreSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   leadContext: z.record(z.any()),
+  meetingId: z.string().min(1).optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string().min(1, "Missing API key")
 });
@@ -69,10 +71,11 @@ router.post(
   '/score', 
   attachPlan(),
   enforceAiModelAccess,
+  enforceAnalysisLimit(),
   validateRequest({ body: scoreSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { transcript, leadContext, model } = req.body;
+      const { transcript, leadContext, model, meetingId } = req.body;
       const apiKey = req.body.apiKey;
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
@@ -86,6 +89,9 @@ router.post(
 
       const provider = AIFactory.getProvider(effectiveModel, apiKey);
       const scoreResult = await provider.scoreLead(transcript, leadContext);
+
+      // Track usage for free-tier limit enforcement (best-effort)
+      await recordAnalysisUsage(uid, meetingId ?? randomUUID());
 
       return res.status(200).json({
         status: "success",

@@ -3,6 +3,27 @@ import { analyzeMeeting } from './ai/ai-service';
 import { useStore } from '../store';
 import { getSharedSocket } from '../hooks/useWebSocket';
 
+// Shared validation with local-db/leads.ts: never persist hallucinated emails as-is.
+// Normalize (trim + lowercase), validate regex, drop invalid to '' + needs_enrichment flag, dedupe.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_EMAIL_LEN = 254;
+
+function normalizeEmail(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const v = raw.trim().toLowerCase();
+  if (!v || v.length > MAX_EMAIL_LEN) return null;
+  if (!EMAIL_RE.test(v)) return null;
+  return v;
+}
+
+function dedupeKey(l: { email?: unknown; name?: unknown; company?: unknown }): string {
+  const rawEmail = typeof l.email === 'string' ? l.email.trim().toLowerCase() : '';
+  if (rawEmail && EMAIL_RE.test(rawEmail)) return `email:${rawEmail}`;
+  const name = typeof l.name === 'string' ? l.name.trim().toLowerCase() : '';
+  const company = typeof l.company === 'string' ? l.company.trim().toLowerCase() : '';
+  return `person:${name}|${company}`;
+}
+
 class LeadAutomationService {
   private isSubscribed: boolean = false;
 
@@ -30,19 +51,48 @@ class LeadAutomationService {
     const leads = (result as any)?.leads || [];
     if (!leads || leads.length === 0) return;
 
-    const leadRecords = leads.map((lead: any, index: number) => ({
-      id: `lead_${meetingId}_${index}_${Date.now()}`,
-      meetingId: meetingId,
-      name: lead.name || 'Unknown',
-      email: lead.email || '',
-      company: lead.company || 'Unknown',
-      role: lead.role || 'Unknown',
-      score: lead.score || 50,
-      stage: lead.stage || 'Lead Identified',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }));
-    
+    const existingLeads = await db.leads.where('meetingId').equals(meetingId).toArray();
+    const seen = new Set(existingLeads.map((l: any) => dedupeKey({
+      email: normalizeEmail(l.email) ?? '',
+      name: l.name,
+      company: l.company,
+    })));
+
+    const leadRecords: any[] = [];
+    leads.forEach((lead: any, index: number) => {
+      const normalizedEmail = normalizeEmail(lead?.email);
+      const needs_enrichment = normalizedEmail === null;
+      const name = (typeof lead?.name === 'string' ? lead.name.trim() : '') || 'Unknown';
+      const company = (typeof lead?.company === 'string' ? lead.company.trim() : '') || 'Unknown';
+      const candidate = {
+        email: normalizedEmail ?? '',
+        name,
+        company,
+      };
+      const key = dedupeKey(candidate);
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      leadRecords.push({
+        id: `lead_${meetingId}_${index}_${Date.now()}`,
+        meetingId: meetingId,
+        name,
+        email: normalizedEmail ?? '',
+        needs_enrichment,
+        customFields: {
+          ...(lead?.customFields ?? {}),
+          ...(needs_enrichment ? { needs_enrichment: true } : {}),
+        },
+        company,
+        role: (typeof lead?.role === 'string' ? lead.role.trim() : '') || 'Unknown',
+        score: lead?.score || 50,
+        stage: lead?.stage || 'Lead Identified',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    });
+
+    if (leadRecords.length === 0) return;
     await db.leads.bulkPut(leadRecords);
   }
 
@@ -74,18 +124,33 @@ class LeadAutomationService {
 
     try {
       const existingLeads = await db.leads.where('meetingId').equals(meetingId).toArray();
-      const alreadyExists = existingLeads.find(l => 
-        (participant.email && l.email === participant.email) || 
-        (participant.user_name && l.name === participant.user_name)
-      );
+      const normalizedParticipantEmail = normalizeEmail(participant.email);
+      const normalizedParticipantName = typeof participant.user_name === 'string'
+        ? participant.user_name.trim().toLowerCase()
+        : '';
+      const alreadyExists = existingLeads.find(l => {
+        const existingEmail = normalizeEmail((l as any).email);
+        if (normalizedParticipantEmail && existingEmail) {
+          return existingEmail === normalizedParticipantEmail;
+        }
+        const existingName = typeof (l as any).name === 'string'
+          ? (l as any).name.trim().toLowerCase()
+          : '';
+        return !!normalizedParticipantName && existingName === normalizedParticipantName;
+      });
 
       if (alreadyExists) return;
 
+      const needs_enrichment = normalizedParticipantEmail === null;
       const newLead = {
         id: `lead_${meetingId}_${participant.user_id || Date.now()}`,
         meetingId: meetingId,
-        name: participant.user_name || 'Unknown Participant',
-        email: participant.email || '',
+        name: (typeof participant.user_name === 'string' ? participant.user_name.trim() : '') || 'Unknown Participant',
+        email: normalizedParticipantEmail ?? '',
+        needs_enrichment,
+        customFields: {
+          ...(needs_enrichment ? { needs_enrichment: true } : {}),
+        },
         company: 'Unknown',
         role: 'Meeting Participant',
         score: 50,

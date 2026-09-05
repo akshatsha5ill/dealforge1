@@ -8,8 +8,10 @@ import authRoutes from './routes/auth.js';
 import zoomRoutes from './routes/zoom.js';
 import aiRoutes from './routes/ai.js';
 import emailRoutes from './routes/email.js';
+import emailWebhooksRoutes from './routes/email-webhooks.js';
 import emailOAuthRoutes from './routes/email-oauth.js';
 import trackingRoutes from './routes/tracking.js';
+import unsubscribeRoutes from './routes/unsubscribe.js';
 import billingRoutes from './routes/billing.js';
 import referralRoutes from './routes/referrals.js';
 import apiKeyRoutes from './routes/api-keys.js';
@@ -31,10 +33,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 if (config.isProd && process.env.SENTRY_DSN) {
-  Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 0.1 });
+  const scrub = (obj: any): any => {
+    if (typeof obj === 'string') return obj.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
+    if (!obj || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(scrub);
+    const out: Record<string, any> = { ...obj };
+    for (const k of Object.keys(out)) {
+      if (/apiKey|transcript|email/i.test(k)) out[k] = '[Redacted]';
+      else out[k] = scrub(out[k]);
+    }
+    return out;
+  };
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    tracesSampleRate: 0.1,
+    beforeSend(event) {
+      if (event.request?.data) event.request.data = scrub(event.request.data);
+      if (event.extra) event.extra = scrub(event.extra);
+      return event;
+    },
+  });
 }
 
 const app = express();
+
+// Trust first proxy (e.g. load balancer / reverse proxy) so req.ip /
+// express-rate-limit see the real client IP via X-Forwarded-For.
+app.set('trust proxy', 1);
 
 const allowedOrigin = config.clientUrl || 'http://localhost:5173';
 
@@ -52,22 +77,41 @@ app.use(helmet({
 }));
 app.use(requestId);
 
+// Key authenticated users by Firebase uid so limits are per-user,
+// falling back to IP for unauthenticated requests.
+const uidKeyGenerator = (req: express.Request): string =>
+  (req as unknown as { user?: { uid?: string } }).user?.uid || req.ip || 'unknown';
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
+  skip: (req) => req.originalUrl === '/api/health' || req.path === '/health',
   message: { error: 'Too many requests, please try again later.' }
 });
 
 app.use(cors({
-  origin: allowedOrigin,
+  origin: (origin, callback) => {
+    // Allow non-browser / same-origin requests with no Origin header.
+    if (!origin) return callback(null, true);
+    if (origin === allowedOrigin) return callback(null, true);
+    try {
+      const hostname = new URL(origin).hostname;
+      if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return callback(null, true);
+      if (hostname.endsWith('.vercel.app')) return callback(null, true);
+    } catch {
+      // fall through to deny
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'X-Request-Id']
 }));
 app.use(compression());
 
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
 app.use(sanitize);
 app.use('/api', apiLimiter);
 
@@ -92,6 +136,7 @@ const aiLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
   message: { error: 'AI rate limit exceeded. Please wait before making another request.' }
 });
 
@@ -100,6 +145,8 @@ const emailLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator, // key by uid (fallback ip)
+  // TODO: add daily quota wired to suppression-service
   message: { error: 'Email rate limit exceeded. Please wait before sending another email.' }
 });
 
@@ -108,6 +155,7 @@ const billingLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
   message: { error: 'Too many billing requests, please try again later.' }
 });
 
@@ -116,6 +164,7 @@ const referralLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
   message: { error: 'Too many referral requests, please try again later.' }
 });
 
@@ -124,6 +173,7 @@ const apiKeyLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
   message: { error: 'Too many API key requests, please try again later.' }
 });
 
@@ -132,6 +182,7 @@ const syncLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: uidKeyGenerator,
   message: { error: 'Sync rate limit exceeded. Please wait before syncing again.' }
 });
 
@@ -140,7 +191,7 @@ const publicApiLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => (req.headers['x-api-key'] as string) || req.ip || 'unknown',
+  keyGenerator: (req) => req.ip || 'unknown',
   message: { error: 'API rate limit exceeded. Please slow down your requests.' }
 });
 
@@ -165,8 +216,10 @@ app.use('/api/zoom', zoomRoutes);
 app.use('/api/billing', verifyAuth, billingLimiter, billingRoutes);
 app.use('/api/referrals', verifyAuth, referralLimiter, referralRoutes);
 app.use('/api/tracking', trackingLimiter, trackingRoutes);
+app.use('/unsubscribe', trackingLimiter, unsubscribeRoutes);
 app.use('/api/ai', verifyAuth, aiLimiter, aiRoutes);
 app.use('/api/email/oauth', billingLimiter, emailOAuthRoutes);
+app.use('/api/email/webhooks', emailWebhooksRoutes);
 app.use('/api/email', verifyAuth, requirePlan('pro'), emailLimiter, emailRoutes);
 app.use('/api/api-keys', verifyAuth, apiKeyLimiter, apiKeyRoutes);
 app.use('/api/sync', verifyAuth, requirePlan('pro'), syncLimiter, syncRoutes);

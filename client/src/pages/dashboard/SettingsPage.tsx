@@ -114,39 +114,53 @@ export default function SettingsPage() {
     }
   };
 
-  const decryptKeys = useCallback(async (encryptedData: EncryptedKeys) => {
-    if (!password) return;
+  const decryptKeys = useCallback(async (encryptedData: EncryptedKeys, passwordToUse: string) => {
+    if (!passwordToUse) return false;
     try {
+      let attempted = 0;
+      let succeeded = 0;
       if (encryptedData.openAi) {
-        const key = await decryptKey(encryptedData.openAi, password);
-        if (key) setLocalOpenAi(key);
+        attempted += 1;
+        const key = await decryptKey(encryptedData.openAi, passwordToUse);
+        if (key) {
+          setLocalOpenAi(key);
+          succeeded += 1;
+        }
       }
       if (encryptedData.anthropic) {
-        const key = await decryptKey(encryptedData.anthropic, password);
-        if (key) setLocalAnthropic(key);
+        attempted += 1;
+        const key = await decryptKey(encryptedData.anthropic, passwordToUse);
+        if (key) {
+          setLocalAnthropic(key);
+          succeeded += 1;
+        }
       }
       if (encryptedData.gemini) {
-        const key = await decryptKey(encryptedData.gemini, password);
-        if (key) setLocalGemini(key);
+        attempted += 1;
+        const key = await decryptKey(encryptedData.gemini, passwordToUse);
+        if (key) {
+          setLocalGemini(key);
+          succeeded += 1;
+        }
       }
       if (encryptedData.resend) {
-        const key = await decryptKey(encryptedData.resend, password);
-        if (key) setLocalResend(key);
+        attempted += 1;
+        const key = await decryptKey(encryptedData.resend, passwordToUse);
+        if (key) {
+          setLocalResend(key);
+          succeeded += 1;
+        }
       }
+      if (attempted > 0 && succeeded === 0) {
+        toast.error('Incorrect password — could not decrypt saved keys.');
+        return false;
+      }
+      return true;
     } catch {
-      // Password incorrect or data corrupted
+      toast.error('Incorrect password — could not decrypt saved keys.');
+      return false;
     }
-  }, [password]);
-
-  useEffect(() => {
-    const loadKeys = async () => {
-      const stored = await db.settings.get('dealforge_encrypted_keys');
-      if (stored && stored.value && password) {
-        decryptKeys(stored.value as EncryptedKeys);
-      }
-    };
-    loadKeys();
-  }, [password, decryptKeys]);
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,26 +172,29 @@ export default function SettingsPage() {
     if (!password || !pendingKeys) return;
     setLoading(true);
     try {
-      const encrypted: EncryptedKeys = {};
-      if (pendingKeys.openAi) {
-        encrypted.openAi = await encryptKey(pendingKeys.openAi, password);
+      const stored = await db.settings.get('dealforge_encrypted_keys');
+      const existing = (stored?.value as EncryptedKeys | undefined) ?? {};
+      // Merge with existing so untouched keys are preserved (empty input = keep stored value).
+      const encrypted: EncryptedKeys = { ...existing };
+      if (pendingKeys.openAi.trim()) {
+        encrypted.openAi = await encryptKey(pendingKeys.openAi.trim(), password);
       }
-      if (pendingKeys.anthropic) {
-        encrypted.anthropic = await encryptKey(pendingKeys.anthropic, password);
+      if (pendingKeys.anthropic.trim()) {
+        encrypted.anthropic = await encryptKey(pendingKeys.anthropic.trim(), password);
       }
-      if (pendingKeys.gemini) {
-        encrypted.gemini = await encryptKey(pendingKeys.gemini, password);
+      if (pendingKeys.gemini.trim()) {
+        encrypted.gemini = await encryptKey(pendingKeys.gemini.trim(), password);
       }
-      if (pendingKeys.resend) {
-        encrypted.resend = await encryptKey(pendingKeys.resend, password);
+      if (pendingKeys.resend.trim()) {
+        encrypted.resend = await encryptKey(pendingKeys.resend.trim(), password);
       }
-      
+
       await db.settings.put({ key: 'dealforge_encrypted_keys', value: encrypted });
 
-      setOpenAiKey(pendingKeys.openAi);
-      setAnthropicKey(pendingKeys.anthropic);
-      setGeminiKey(pendingKeys.gemini);
-      setResendKey(pendingKeys.resend);
+      if (pendingKeys.openAi.trim()) setOpenAiKey(pendingKeys.openAi.trim());
+      if (pendingKeys.anthropic.trim()) setAnthropicKey(pendingKeys.anthropic.trim());
+      if (pendingKeys.gemini.trim()) setGeminiKey(pendingKeys.gemini.trim());
+      if (pendingKeys.resend.trim()) setResendKey(pendingKeys.resend.trim());
 
       setSaved(true);
       setShowPasswordPrompt(false);
@@ -185,6 +202,7 @@ export default function SettingsPage() {
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
       console.error('Encryption failed:', err);
+      toast.error('Failed to encrypt and save keys.');
     } finally {
       setLoading(false);
     }
@@ -195,12 +213,16 @@ export default function SettingsPage() {
     setLoading(true);
     try {
       const stored = await db.settings.get('dealforge_encrypted_keys');
-      if (stored && stored.value) {
-        await decryptKeys(stored.value as EncryptedKeys);
+      if (!stored?.value) {
+        toast.error('No saved keys found.');
+        return;
       }
-      setShowPasswordPrompt(false);
+      const ok = await decryptKeys(stored.value as EncryptedKeys, password);
+      if (ok) {
+        setShowPasswordPrompt(false);
+      }
     } catch {
-      console.error('Decryption failed');
+      toast.error('Incorrect password — could not decrypt saved keys.');
     } finally {
       setLoading(false);
     }

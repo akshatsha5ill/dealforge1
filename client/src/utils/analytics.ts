@@ -1,5 +1,17 @@
 export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+export const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDayKey(d: Date): string {
+  return `${MONTHS_SHORT[d.getMonth()]} ${d.getDate()} ${d.getFullYear()}`;
+}
+
+function startOfDayLocal(d: Date): Date {
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
 export interface DateItem {
   createdAt?: string | number;
   startTime?: string;
@@ -9,10 +21,14 @@ export interface DateItem {
 }
 
 export function filterByDate<T extends DateItem>(items: T[], days: number): T[] {
-  const cutoff = Date.now() - days * 86400000;
+  const startOfToday = startOfDayLocal(new Date());
+  startOfToday.setDate(startOfToday.getDate() - (days - 1));
+  const cutoff = startOfToday.getTime();
   return items.filter((item) => {
-    const ts = new Date(item.createdAt || item.startTime || item.sentAt || item.scheduledAt || Date.now()).getTime();
-    return ts >= cutoff;
+    const raw = item.createdAt || item.startTime || item.sentAt || item.scheduledAt;
+    if (!raw) return false;
+    const ts = new Date(raw).getTime();
+    return !isNaN(ts) && ts >= cutoff;
   });
 }
 
@@ -22,13 +38,13 @@ export interface MeetingData {
 }
 
 export function buildMeetingTrendData(meetings: MeetingData[]) {
-  const counts: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0 };
+  const counts: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
   for (const m of meetings) {
     const d = new Date(m.startTime);
     const day = DAY_NAMES[d.getDay()];
     if (day in counts) counts[day]++;
   }
-  return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((name) => ({ name, meetings: counts[name] }));
+  return ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((name) => ({ name, meetings: counts[name] }));
 }
 
 export interface DealData {
@@ -103,47 +119,62 @@ export function calculatePipelineVelocity(deals: DealData[]) {
 }
 
 export function buildMeetingFrequencyData(meetings: MeetingData[], days: number) {
-   const data: Record<string, number> = {};
-   const now = new Date();
-   
-   // Initialize buckets for the chart
-   const step = days > 30 ? Math.ceil(days / 15) : 1; // Group by multiple days if range is large
-   
-   for (let i = days - 1; i >= 0; i -= step) {
-      const d = new Date(now.getTime() - i * 86400000);
-      const key = `${d.getMonth() + 1}/${d.getDate()}`;
-      data[key] = 0;
-   }
-   
-   for (const m of meetings) {
-      const d = new Date(m.startTime);
-      // Find the closest bucket
-      for (let i = days - 1; i >= 0; i -= step) {
-         const bucketDate = new Date(now.getTime() - i * 86400000);
-         // If same day or within step
-         const diffTime = Math.abs(d.getTime() - bucketDate.getTime());
-         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
-         if (diffDays <= step) {
-             const key = `${bucketDate.getMonth() + 1}/${bucketDate.getDate()}`;
-             if (data[key] !== undefined) {
-                 data[key]++;
-                 break;
-             }
-         }
-      }
-   }
-   
-   // Simpler exact matching if step == 1
-   if (step === 1) {
-     for (const key in data) data[key] = 0;
-     for (const m of meetings) {
-       const d = new Date(m.startTime);
-       const key = `${d.getMonth() + 1}/${d.getDate()}`;
-       if (data[key] !== undefined) data[key]++;
-     }
-   }
+  const startOfToday = startOfDayLocal(new Date());
+  const cutoffDate = new Date(startOfToday);
+  cutoffDate.setDate(startOfToday.getDate() - (days - 1));
+  const cutoffTime = cutoffDate.getTime();
+  const startOfTodayTime = startOfToday.getTime();
+  
+  // Initialize buckets for the chart
+  const step = days > 30 ? Math.ceil(days / 15) : 1; // Group by multiple days if range is large
+  
+  // Build bucket offsets (days ago), always including today (offset 0)
+  const offsets = new Set<number>();
+  for (let i = days - 1; i >= 0; i -= step) {
+    offsets.add(i);
+  }
+  offsets.add(0);
+  const sortedOffsets = Array.from(offsets).sort((a, b) => b - a);
 
-   return Object.entries(data).map(([date, count]) => ({ date, count }));
+  const buckets: { key: string; timestamp: number; count: number }[] = [];
+  const keyToIndex = new Map<string, number>();
+  for (const i of sortedOffsets) {
+    const bucketDate = new Date(startOfToday);
+    bucketDate.setDate(startOfToday.getDate() - i);
+    const dayStart = startOfDayLocal(bucketDate);
+    const key = formatDayKey(dayStart);
+    if (!keyToIndex.has(key)) {
+      keyToIndex.set(key, buckets.length);
+      buckets.push({ key, timestamp: dayStart.getTime(), count: 0 });
+    }
+  }
+
+  // Sort buckets by timestamp (not string)
+  buckets.sort((a, b) => a.timestamp - b.timestamp);
+  keyToIndex.clear();
+  buckets.forEach((b, idx) => keyToIndex.set(b.key, idx));
+  
+  for (const m of meetings) {
+    const d = new Date(m.startTime);
+    if (isNaN(d.getTime())) continue;
+    const dayStartTime = startOfDayLocal(d).getTime();
+    if (dayStartTime < cutoffTime || dayStartTime > startOfTodayTime) continue;
+    if (step === 1) {
+      const key = formatDayKey(startOfDayLocal(d));
+      const idx = keyToIndex.get(key);
+      if (idx !== undefined) buckets[idx].count++;
+    } else {
+      // Assign to the latest bucket whose start is <= meeting day
+      for (let bi = buckets.length - 1; bi >= 0; bi--) {
+        if (dayStartTime >= buckets[bi].timestamp) {
+          buckets[bi].count++;
+          break;
+        }
+      }
+    }
+  }
+
+  return buckets.map(({ key, count }) => ({ date: key, count }));
 }
 
 export function buildPipelineVelocity(deals: DealData[]) {
@@ -162,13 +193,16 @@ export function buildPipelineVelocity(deals: DealData[]) {
 }
 
 export function buildLeadScoreTrend(leads: LeadData[]) {
-  const daysMap: Record<string, { totalScore: number; count: number }> = {};
+  const daysMap: Record<string, { totalScore: number; count: number; timestamp: number }> = {};
   
   for (const l of leads) {
     if (l.createdAt && l.score !== undefined) {
-      const dateStr = new Date(l.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const d = new Date(l.createdAt);
+      if (isNaN(d.getTime())) continue;
+      const dayStart = startOfDayLocal(d);
+      const dateStr = formatDayKey(dayStart);
       if (!daysMap[dateStr]) {
-        daysMap[dateStr] = { totalScore: 0, count: 0 };
+        daysMap[dateStr] = { totalScore: 0, count: 0, timestamp: dayStart.getTime() };
       }
       daysMap[dateStr].totalScore += l.score;
       daysMap[dateStr].count += 1;
@@ -177,9 +211,11 @@ export function buildLeadScoreTrend(leads: LeadData[]) {
   
   const result = Object.entries(daysMap).map(([date, data]) => ({
     name: date,
-    score: Math.round(data.totalScore / data.count)
+    score: Math.round(data.totalScore / data.count),
+    timestamp: data.timestamp
   }));
   
-  // Sort by parsing the date (assuming current year for simplicity)
-  return result.sort((a, b) => new Date(`${a.name} 2024`).getTime() - new Date(`${b.name} 2024`).getTime());
+  // Sort by timestamp (not string, no assumed year)
+  result.sort((a, b) => a.timestamp - b.timestamp);
+  return result.map(({ name, score }) => ({ name, score }));
 }

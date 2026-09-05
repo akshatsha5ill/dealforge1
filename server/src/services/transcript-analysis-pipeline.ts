@@ -1,6 +1,7 @@
 import { Server } from 'socket.io';
 import { analyzeMeeting } from './ai-service.js';
 import bufferService from './buffer-service.js';
+import { getDailyAnalysisCount, getMonthlyAnalysisCount, DAILY_ANALYSIS_LIMIT, FREE_ANALYSIS_LIMIT } from './usage-service.js';
 import log from '../utils/logger.js';
 
 interface TranscriptSegment {
@@ -20,10 +21,13 @@ interface Suggestion {
 
 interface MeetingPipeline {
   meetingId: string;
+  ownerUid?: string;
   intervalId: NodeJS.Timeout;
   lastAnalyzedIndex: number;
   isActive: boolean;
 }
+
+const MAX_TRANSCRIPT_CHARS = 12000;
 
 class TranscriptAnalysisPipeline {
   private pipelines: Map<string, MeetingPipeline> = new Map();
@@ -37,7 +41,7 @@ class TranscriptAnalysisPipeline {
     log.info('Transcript analysis pipeline initialized');
   }
 
-  startPipeline(meetingId: string): void {
+  startPipeline(meetingId: string, ownerUid?: string): void {
     if (!this.isInitialized) {
       log.warn('Pipeline not initialized, cannot start pipeline', { meetingId });
       return;
@@ -50,6 +54,7 @@ class TranscriptAnalysisPipeline {
 
     const pipeline: MeetingPipeline = {
       meetingId,
+      ownerUid,
       intervalId: setInterval(() => this.analyzeTranscript(meetingId), this.analysisIntervalMs),
       lastAnalyzedIndex: 0,
       isActive: true
@@ -94,7 +99,8 @@ class TranscriptAnalysisPipeline {
         return;
       }
 
-      const fullTranscript = this.formatTranscript(transcriptData.segments);
+      // Cost guard: send only the delta since last analysis, capped at 12k chars.
+      const deltaTranscript = this.formatTranscript(newSegments).slice(-MAX_TRANSCRIPT_CHARS);
       const apiKey = this.getApiKey();
       
       if (!apiKey) {
@@ -102,7 +108,22 @@ class TranscriptAnalysisPipeline {
         return;
       }
 
-      const analysisResult = await this.performAnalysis(fullTranscript, apiKey);
+      // Quota check before expensive AI call.
+      const quotaUid = pipeline.ownerUid ?? await this.resolveOwnerUid(meetingId) ?? meetingId;
+      const [dailyCount, monthlyCount] = await Promise.all([
+        getDailyAnalysisCount(quotaUid),
+        getMonthlyAnalysisCount(quotaUid),
+      ]);
+      if (dailyCount >= DAILY_ANALYSIS_LIMIT) {
+        log.warn('Daily analysis quota exceeded, skipping AI analysis', { meetingId, dailyCount, limit: DAILY_ANALYSIS_LIMIT });
+        return;
+      }
+      if (monthlyCount >= FREE_ANALYSIS_LIMIT) {
+        log.warn('Monthly analysis quota exceeded, skipping AI analysis', { meetingId, monthlyCount, limit: FREE_ANALYSIS_LIMIT });
+        return;
+      }
+
+      const analysisResult = await this.performAnalysis(deltaTranscript, apiKey);
       
       if (analysisResult && analysisResult.suggestions) {
         await this.emitSuggestions(meetingId, analysisResult.suggestions);
@@ -118,6 +139,20 @@ class TranscriptAnalysisPipeline {
 
     } catch (error) {
       log.error('Error analyzing transcript', { meetingId, error: error instanceof Error ? error.message : error });
+    }
+  }
+
+  private async resolveOwnerUid(meetingId: string): Promise<string | null> {
+    try {
+      const meta = await bufferService.get<{ uid?: unknown; ownerUid?: unknown; userId?: unknown; owner?: unknown }>(`meeting:${meetingId}`);
+      if (!meta || typeof meta !== 'object') return null;
+      for (const key of ['ownerUid', 'uid', 'userId', 'owner'] as const) {
+        const value = meta[key];
+        if (typeof value === 'string' && value.length > 0) return value;
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

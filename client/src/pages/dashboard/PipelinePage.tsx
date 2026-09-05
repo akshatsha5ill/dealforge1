@@ -10,6 +10,7 @@ import UpgradePrompt from '../../components/common/UpgradePrompt';
 import { trackEvent } from '../../services/usage-analytics';
 import { Deal } from '../../types';
 import { confirm } from '../../components/common/ConfirmDialog';
+import { toast } from '../../components/common/Toast';
 import '../../components/pipeline/Pipeline.css';
 
 export default function PipelinePage() {
@@ -72,11 +73,13 @@ export default function PipelinePage() {
     const deal = deals.find((d) => d.id === dealId);
     if (!deal) return;
 
-    const updatedDeals = [...deals];
+    const updatedDeals: Deal[] = structuredClone(deals);
+    const prevDeals: Deal[] = structuredClone(deals);
     const dealIndex = updatedDeals.findIndex(d => d.id === dealId);
+    if (dealIndex === -1) return;
     
     // Update stage and timestamp
-    updatedDeals[dealIndex] = { ...deal, stage: stageId, updatedAt: new Date().toISOString() };
+    updatedDeals[dealIndex] = { ...updatedDeals[dealIndex], stage: stageId, updatedAt: new Date().toISOString() };
     
     // Sort items in target stage excluding the dragged item
     const stageDeals = updatedDeals
@@ -100,7 +103,7 @@ export default function PipelinePage() {
     stageDeals.forEach((d, i) => {
       if (d.order !== i || d.id === dealId) {
         d.order = i;
-        dealsToSave.push(d);
+        dealsToSave.push({ ...d });
       }
     });
 
@@ -111,10 +114,15 @@ export default function PipelinePage() {
     });
     setDeals(finalDeals);
 
-    // Persist changes
+    // Persist changes with rollback on failure
     if (dealsToSave.length > 0) {
-      await dealsDB.bulkPut(dealsToSave);
-      loadDeals();
+      try {
+        await dealsDB.bulkPut(dealsToSave);
+        await loadDeals();
+      } catch {
+        setDeals(prevDeals);
+        toast.error('Failed to move deal. Please try again.');
+      }
     }
     
     setDraggedId(null);

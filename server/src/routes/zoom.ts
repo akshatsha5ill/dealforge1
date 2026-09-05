@@ -12,8 +12,91 @@ import log from '../utils/logger.js';
 import zoomRTMS from '../services/zoom-rtms.js';
 import transcriptAnalysisPipeline from '../services/transcript-analysis-pipeline.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
+import { FieldValue } from 'firebase-admin/firestore';
 
 const router = express.Router();
+
+// FIX-SEC-S4: Zoom HMAC must be computed over the exact wire bytes, not
+// JSON.stringify(req.body) (key order / whitespace change breaks or bypasses
+// verification). Requires app.ts to preserve the raw buffer, e.g.:
+//   app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }))
+// or to mount /webhook + /deauth with express.raw({ type: 'application/json' }).
+// Until that lands, getZoomRawBody() prefers rawBody/Buffer and falls back to
+// JSON.stringify for backwards compat.
+// Also enforces 5-minute timestamp freshness to block replays.
+const ZOOM_TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
+
+function getZoomRawBody(req: Request): string {
+  const raw = (req as Request & { rawBody?: unknown }).rawBody;
+  if (typeof raw === 'string') return raw;
+  if (Buffer.isBuffer(raw)) return raw.toString('utf8');
+  if (Buffer.isBuffer(req.body)) return (req.body as Buffer).toString('utf8');
+  if (typeof req.body === 'string') return req.body;
+  return JSON.stringify(req.body);
+}
+
+function getZoomParsedBody<T = Record<string, unknown>>(req: Request): T {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    return req.body as T;
+  }
+  try {
+    return JSON.parse(getZoomRawBody(req)) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+function isFreshZoomTimestamp(tsHeader: string): boolean {
+  const ts = Number(tsHeader);
+  if (!Number.isFinite(ts)) return false;
+  // Zoom sends ms; tolerate seconds producers by normalizing.
+  const tsMs = ts < 1e12 ? ts * 1000 : ts;
+  return Math.abs(Date.now() - tsMs) <= ZOOM_TIMESTAMP_TOLERANCE_MS;
+}
+
+// Buffer ownership: global keys transcript:${meetingId} / notes:${meetingId} /
+// meeting:${meetingId} / participants:${meetingId} were verifyAuth-only with no
+// owner check, so any authenticated user could read/write/delete any meeting.
+// meeting:${meetingId} now carries ownerUid (stored on first authenticated
+// create/claim) and every buffer GET/POST/DELETE requires owner === req.user.uid.
+function getBufferOwnerUid(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta || typeof meta !== 'object') return null;
+  for (const k of ['ownerUid', 'uid', 'userId', 'owner'] as const) {
+    const v = (meta as Record<string, unknown>)[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return null;
+}
+
+// POST path: claim ownership on first authenticated create, migrate legacy
+// owner-less entries, enforce owner === uid otherwise.
+async function ensureBufferOwnership(meetingId: string, uid: string): Promise<boolean> {
+  const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+  if (!meta) {
+    await bufferService.store(`meeting:${meetingId}`, {
+      ownerUid: uid,
+      createdAt: new Date().toISOString(),
+      status: 'active',
+    });
+    return true;
+  }
+  const owner = getBufferOwnerUid(meta);
+  if (!owner) {
+    (meta as Record<string, unknown>).ownerUid = uid;
+    await bufferService.store(`meeting:${meetingId}`, meta);
+    return true;
+  }
+  return owner === uid;
+}
+
+// GET/DELETE path: strict check, never creates.
+async function checkBufferOwnership(meetingId: string, uid: string): Promise<boolean> {
+  const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+  if (!meta) return false;
+  const owner = getBufferOwnerUid(meta);
+  if (!owner) return false;
+  return owner === uid;
+}
 
 const zoomStartSchema = z.object({
   redirect: z.string().optional(),
@@ -45,7 +128,7 @@ router.post('/oauth/start', verifyAuth, validateRequest({ body: zoomStartSchema 
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'meeting:read:admin meeting:write user:read',
+    scope: 'meeting:read user:read',
     state: encrypt(JSON.stringify({ uid: req.user!.uid, redirect: rawRedirect })),
   });
   res.status(200).json({ url: `https://zoom.us/oauth/authorize?${params.toString()}` });
@@ -142,14 +225,38 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
       }
     }
 
+    const zoomAccessToken = tokenRes.access_token as string;
+    const zoomRefreshToken = (tokenRes.refresh_token as string) || '';
+
+    // Fetch Zoom profile so we can persist zoomUserId (required for deauth lookup
+    // and /oauth/status display). Failure is non-fatal — tokens are still stored.
+    let zoomUserId: string | undefined;
+    try {
+      const profileRes = await fetch('https://api.zoom.us/v2/users/me', {
+        headers: { Authorization: `Bearer ${zoomAccessToken}` },
+      });
+      if (profileRes.ok) {
+        const profile = (await profileRes.json()) as { id?: string };
+        if (profile.id) zoomUserId = profile.id;
+      } else {
+        log.warn('Failed to fetch Zoom user profile', { status: profileRes.status });
+      }
+    } catch (err) {
+      log.warn('Failed to fetch Zoom user profile', { error: err });
+    }
+
     if (uid) {
       await getFirebaseFirestore().collection('users').doc(uid).set({
         zoomLinked: true,
-        zoomAccessToken: tokenRes.access_token,
-        zoomRefreshToken: tokenRes.refresh_token,
+        zoomAccessTokenEnc: encrypt(zoomAccessToken),
+        zoomRefreshTokenEnc: encrypt(zoomRefreshToken),
         zoomTokenExpiresAt: tokenRes.expires_in
           ? Date.now() + (tokenRes.expires_in as number) * 1000
           : null,
+        ...(zoomUserId ? { zoomUserId } : {}),
+        // Remove legacy plaintext fields if a previous version stored them.
+        zoomAccessToken: FieldValue.delete(),
+        zoomRefreshToken: FieldValue.delete(),
       }, { merge: true });
     }
 
@@ -169,8 +276,93 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
   }
 });
 
+// Decrypt a stored Zoom token. Supports legacy plaintext values written before
+// the encryption fix so existing links keep working until refresh/reconnect.
+function decryptStoredToken(stored: string): string {
+  try {
+    return decrypt(stored);
+  } catch {
+    return stored;
+  }
+}
+
+// Read the user's stored Zoom tokens, decrypting them (same encrypt/decrypt
+// pattern as services/email-oauth.ts). Refreshes the access token via Zoom
+// OAuth when expired and persists the re-encrypted tokens.
+export async function getValidZoomAccessToken(uid: string): Promise<string> {
+  const docRef = getFirebaseFirestore().collection('users').doc(uid);
+  const doc = await docRef.get();
+  const data = doc.data() as {
+    zoomAccessTokenEnc?: string;
+    zoomRefreshTokenEnc?: string;
+    zoomAccessToken?: string;
+    zoomRefreshToken?: string;
+    zoomTokenExpiresAt?: number | null;
+  } | undefined;
+  if (!doc.exists || !data) {
+    throw new AppError('Zoom account not linked', 400);
+  }
+  const encAccess = data.zoomAccessTokenEnc ?? data.zoomAccessToken;
+  const encRefresh = data.zoomRefreshTokenEnc ?? data.zoomRefreshToken;
+  if (!encAccess) {
+    throw new AppError('Zoom account not linked', 400);
+  }
+  let accessToken = decryptStoredToken(encAccess);
+  const expiresAt = data.zoomTokenExpiresAt;
+
+  if (typeof expiresAt === 'number' && Date.now() >= expiresAt - 60000) {
+    if (!encRefresh) {
+      throw new AppError('Zoom session expired. Please reconnect Zoom.', 401);
+    }
+    const refreshToken = decryptStoredToken(encRefresh);
+    if (!refreshToken) {
+      throw new AppError('Zoom session expired. Please reconnect Zoom.', 401);
+    }
+    const { clientId, clientSecret } = config.zoom;
+    if (!clientId || !clientSecret) {
+      throw new AppError('Zoom OAuth not configured', 500);
+    }
+    const creds = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }).toString();
+    const refreshRes = await fetch('https://zoom.us/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${creds}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+    const refreshed = (await refreshRes.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      error?: unknown;
+      reason?: string;
+    };
+    if (!refreshRes.ok || !refreshed.access_token) {
+      log.error('Zoom token refresh failed', { error: refreshed.reason || refreshed.error });
+      throw new AppError('Zoom session expired. Please reconnect Zoom.', 401);
+    }
+    accessToken = refreshed.access_token;
+    await docRef.set(
+      {
+        zoomAccessTokenEnc: encrypt(accessToken),
+        ...(refreshed.refresh_token ? { zoomRefreshTokenEnc: encrypt(refreshed.refresh_token) } : {}),
+        zoomTokenExpiresAt: refreshed.expires_in ? Date.now() + refreshed.expires_in * 1000 : expiresAt,
+        zoomAccessToken: FieldValue.delete(),
+        zoomRefreshToken: FieldValue.delete(),
+      },
+      { merge: true }
+    );
+  }
+
+  return accessToken;
+}
+
 router.post('/webhook', async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
-  const { event, payload } = req.body;
   const secret = process.env.ZOOM_WEBHOOK_SECRET_TOKEN || config.zoom.webhookSecretToken;
 
   if (!secret) {
@@ -184,7 +376,11 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
     return next(new AppError('Unauthorized: Missing signature', 401));
   }
 
-  const message = `v0:${zoomTimestamp}:${JSON.stringify(req.body)}`;
+  if (!isFreshZoomTimestamp(zoomTimestamp)) {
+    return next(new AppError('Unauthorized: Stale request', 401));
+  }
+
+  const message = `v0:${zoomTimestamp}:${getZoomRawBody(req)}`;
   const hashForVerify = crypto.createHmac('sha256', secret).update(message).digest('hex');
   const signature = `v0=${hashForVerify}`;
 
@@ -194,6 +390,8 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
   if (bufSig.length !== bufZoom.length || !crypto.timingSafeEqual(bufSig, bufZoom)) {
     return next(new AppError('Unauthorized: Invalid signature', 401));
   }
+
+  const { event, payload } = getZoomParsedBody<{ event?: string; payload?: any }>(req);
 
   switch (event) {
     case 'endpoint.url_validation': {
@@ -208,10 +406,14 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
       const meetingId = payload?.object?.id;
       const topic = payload?.object?.topic || 'Untitled Meeting';
       if (meetingId) {
-        await bufferService.store(`meeting:${meetingId}`, { 
-          startedAt: new Date().toISOString(), 
+        const existingMeta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+        const prevOwner = getBufferOwnerUid(existingMeta);
+        await bufferService.store(`meeting:${meetingId}`, {
+          startedAt: new Date().toISOString(),
           status: 'active',
-          topic 
+          topic,
+          ...(prevOwner ? { ownerUid: prevOwner } : {}),
+          ...(existingMeta && typeof existingMeta === 'object' ? { createdAt: (existingMeta as Record<string, unknown>).createdAt ?? (existingMeta as Record<string, unknown>).startedAt } : {}),
         });
 
         // Establish RTMS connection for real-time transcription
@@ -260,17 +462,21 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
       const meetingId = payload?.object?.id;
       const participant = payload?.object?.participant;
       if (meetingId && participant) {
+        const consentNotifiedAt = new Date().toISOString();
+        const participantWithConsent = { ...participant, consentNotifiedAt };
         const key = `participants:${meetingId}`;
         const existing = (await bufferService.get<{ participants: Array<Record<string, unknown>> }>(key)) || { participants: [] };
         if (!existing.participants.find((p) => p.user_id === participant.user_id || p.user_name === participant.user_name)) {
-          existing.participants.push(participant);
+          existing.participants.push(participantWithConsent);
           await bufferService.store(key, existing);
         }
 
         const io = req.app.get('io');
         if (io) {
-          io.to(`meeting:${meetingId}`).emit('participant_joined', { meetingId, participant });
-          io.emit('participant_joined', { meetingId, participant });
+          io.to(`meeting:${meetingId}`).emit('participant_joined', { meetingId, participant: participantWithConsent });
+          io.emit('participant_joined', { meetingId, participant: participantWithConsent });
+          io.to(`meeting:${meetingId}`).emit('recording_consent_notice', { meetingId, participant: participantWithConsent, consentNotifiedAt, message: 'This meeting is being transcribed by DealForge. Please inform all participants and obtain required consent.' });
+          io.emit('recording_consent_notice', { meetingId, participant: participantWithConsent, consentNotifiedAt });
         }
       }
       break;
@@ -281,7 +487,6 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
 });
 
 router.post('/deauth', async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
-  const { payload } = req.body;
   const secret = config.zoom.webhookSecretToken;
 
   if (!secret) {
@@ -295,7 +500,11 @@ router.post('/deauth', async (req: Request, res: Response, next: express.NextFun
     return next(new AppError('Unauthorized: Missing signature', 401));
   }
 
-  const message = `v0:${zoomTimestamp}:${JSON.stringify(req.body)}`;
+  if (!isFreshZoomTimestamp(zoomTimestamp)) {
+    return next(new AppError('Unauthorized: Stale request', 401));
+  }
+
+  const message = `v0:${zoomTimestamp}:${getZoomRawBody(req)}`;
   const hashForVerify = crypto.createHmac('sha256', secret).update(message).digest('hex');
   const signature = `v0=${hashForVerify}`;
 
@@ -306,6 +515,8 @@ router.post('/deauth', async (req: Request, res: Response, next: express.NextFun
     return next(new AppError('Unauthorized: Invalid signature', 401));
   }
 
+  const { payload } = getZoomParsedBody<{ payload?: { user_id?: string; account_id?: string } }>(req);
+
   const userId = payload?.user_id;
   const accountId = payload?.account_id;
   
@@ -313,17 +524,87 @@ router.post('/deauth', async (req: Request, res: Response, next: express.NextFun
   
   if (userId) {
     try {
-      const snapshot = await getFirebaseFirestore().collection('users').where('zoomUserId', '==', userId).get();
-      const promises: Promise<unknown>[] = [];
-      snapshot.forEach((doc: FirebaseFirestore.QueryDocumentSnapshot) => {
-        promises.push(doc.ref.update({ 
-          zoomLinked: false, 
-          zoomUserId: FirebaseFirestore.FieldValue.delete(),
-          zoomAccessToken: FirebaseFirestore.FieldValue.delete(),
-          zoomRefreshToken: FirebaseFirestore.FieldValue.delete()
-        }));
-      });
-      await Promise.all(promises);
+      const firestore = getFirebaseFirestore();
+      const snapshot = await firestore.collection('users').where('zoomUserId', '==', userId).get();
+      // Live meeting candidates (owner-filtered per uid below so we never wipe another user's active meeting).
+      let activeMeetingIds: string[] = [];
+      try {
+        const pipelines = transcriptAnalysisPipeline.getActivePipelines() || [];
+        const rtmsIds = zoomRTMS.getConnectedMeetingIds() || [];
+        activeMeetingIds = Array.from(new Set([...pipelines, ...rtmsIds]));
+      } catch (err) {
+        log.warn('Failed to list active meetings during deauth cleanup', { error: err });
+      }
+      const wipeOneUser = async (uid: string): Promise<void> => {
+        // 1) Tokens + link metadata.
+        try {
+          await firestore.collection('users').doc(uid).update({
+            zoomLinked: false,
+            zoomUserId: FieldValue.delete(),
+            zoomAccessTokenEnc: FieldValue.delete(),
+            zoomRefreshTokenEnc: FieldValue.delete(),
+            zoomTokenExpiresAt: FieldValue.delete(),
+            zoomAccessToken: FieldValue.delete(),
+            zoomRefreshToken: FieldValue.delete()
+          });
+        } catch (err) {
+          log.error('Failed to clean up user tokens on deauth', { error: err, uid });
+        }
+        // 2) Discover meetingIds owned by this uid.
+        const meetingIds = new Set<string>();
+        try {
+          const meetingsSnap = await firestore.collection('users').doc(uid).collection('api-data').doc('meetings').collection('items').get();
+          meetingsSnap.forEach((d) => { if (d.id) meetingIds.add(d.id); });
+        } catch { /* no persisted meetings — ignore */ }
+        try {
+          const analysesSnap = await firestore.collection('users').doc(uid).collection('api-data').doc('analyses').collection('items').get();
+          analysesSnap.forEach((d) => {
+            const mid = (d.data() as { meetingId?: unknown }).meetingId;
+            if (typeof mid === 'string' && mid) meetingIds.add(mid);
+          });
+        } catch { /* ignore */ }
+        for (const mid of activeMeetingIds) {
+          try {
+            const meta = await bufferService.get<Record<string, unknown>>(`meeting:${mid}`);
+            if (meta && typeof meta === 'object') {
+              const owner = (meta as Record<string, unknown>).ownerUid
+                ?? (meta as Record<string, unknown>).uid
+                ?? (meta as Record<string, unknown>).userId
+                ?? (meta as Record<string, unknown>).owner;
+              if (owner === uid) meetingIds.add(mid);
+            }
+          } catch { /* ignore per-meeting read failure */ }
+        }
+        // 3) Buffer keys + stop live processing for each owned meeting.
+        for (const mid of meetingIds) {
+          try {
+            transcriptAnalysisPipeline.stopPipeline(mid);
+          } catch { /* ignore */ }
+          try {
+            await zoomRTMS.disconnectFromMeeting(mid);
+          } catch { /* ignore */ }
+          for (const prefix of ['transcript', 'meeting', 'participants', 'notes'] as const) {
+            try {
+              await bufferService.delete(`${prefix}:${mid}`);
+            } catch (err) {
+              log.warn('Failed to delete buffer key on deauth', { error: err, uid, key: `${prefix}:${mid}` });
+            }
+          }
+        }
+        // 4) Tracking inbox (same Redis store; in-memory copy expires via TTL/pull).
+        try {
+          await bufferService.delete(`tracking:${uid}`);
+        } catch (err) {
+          log.warn('Failed to delete tracking inbox on deauth', { error: err, uid });
+        }
+        log.info('Deauth cleanup completed for user', { uid, meetingsWiped: meetingIds.size });
+      };
+      const uids: string[] = [];
+      snapshot.forEach((doc) => { uids.push(doc.id); });
+      await Promise.all(uids.map((uid) => wipeOneUser(uid)));
+      if (uids.length === 0) {
+        log.info('Deauth received for unknown Zoom user, nothing to wipe', { zoomUserId: userId });
+      }
     } catch (err) {
       log.error('Failed to clean up user on deauth', { error: err });
     }
@@ -339,6 +620,11 @@ const transcriptionSchema = z.object({
 
 router.post('/transcription', verifyAuth, validateRequest({ body: transcriptionSchema }), async (req: AuthRequest, res: Response, next: express.NextFunction): Promise<void> => {
   const { meetingId, segment } = req.body;
+  const uid = req.user!.uid;
+  if (!(await ensureBufferOwnership(String(meetingId), uid))) {
+    res.status(403).json({ error: 'Forbidden: not meeting owner' });
+    return;
+  }
 
   // Normalize segment to ensure consistent format
   const normalizedSegment = {
@@ -379,6 +665,11 @@ const notesSchema = z.object({
 
 router.post('/notes', verifyAuth, validateRequest({ body: notesSchema }), async (req: AuthRequest, res: Response, next: express.NextFunction): Promise<void> => {
   const { meetingId, note } = req.body;
+  const uid = req.user!.uid;
+  if (!(await ensureBufferOwnership(String(meetingId), uid))) {
+    res.status(403).json({ error: 'Forbidden: not meeting owner' });
+    return;
+  }
 
   const key = `notes:${meetingId}`;
   const existing = (await bufferService.get<{ notes: Array<Record<string, unknown>> }>(key)) || { notes: [] };
@@ -390,6 +681,11 @@ router.post('/notes', verifyAuth, validateRequest({ body: notesSchema }), async 
 
 router.get('/buffer/:meetingId', verifyAuth, async (req: AuthRequest, res: Response) => {
   const { meetingId } = req.params;
+  const uid = req.user!.uid;
+  if (!(await checkBufferOwnership(String(meetingId), uid))) {
+    res.status(403).json({ error: 'Forbidden: not meeting owner' });
+    return;
+  }
   const transcript = await bufferService.get(`transcript:${meetingId}`);
   const notes = await bufferService.get(`notes:${meetingId}`);
   const meetingData = await bufferService.get(`meeting:${meetingId}`);
@@ -405,6 +701,11 @@ router.get('/buffer/:meetingId', verifyAuth, async (req: AuthRequest, res: Respo
 
 router.delete('/buffer/:meetingId', verifyAuth, async (req: AuthRequest, res: Response) => {
   const meetingId = req.params.meetingId;
+  const uid = req.user!.uid;
+  if (!(await checkBufferOwnership(String(meetingId), uid))) {
+    res.status(403).json({ error: 'Forbidden: not meeting owner' });
+    return;
+  }
   await bufferService.delete(`transcript:${meetingId}`);
   await bufferService.delete(`notes:${meetingId}`);
   await bufferService.delete(`meeting:${meetingId}`);

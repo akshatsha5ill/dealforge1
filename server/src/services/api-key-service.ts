@@ -113,7 +113,32 @@ export async function findApiKeyOwner(key: string): Promise<{ uid: string; keyHa
   if (!doc.exists) return null;
   const data = doc.data() as Partial<ApiKeyRecord>;
   if (data.revoked || !data.uid) return null;
-  return { uid: data.uid, keyHash };
+  // API keys require an active paid plan. Deny if free/expired so keys do
+  // not survive a downgrade, cancellation, or period end.
+  const uid = data.uid;
+  try {
+    const subDoc = await getFirebaseFirestore()
+      .collection('users')
+      .doc(uid)
+      .collection('subscription')
+      .doc('current')
+      .get();
+    if (!subDoc.exists) return null;
+    const sub = subDoc.data();
+    const plan = sub?.plan as string | undefined;
+    if (plan !== 'pro' && plan !== 'enterprise') return null;
+    const status = sub?.status as string | undefined;
+    if (status === 'cancelled' || status === 'past_due' || status === 'expired') return null;
+    const currentPeriodEnd = sub?.currentPeriodEnd as string | null | undefined;
+    if (currentPeriodEnd) {
+      const endTime = new Date(currentPeriodEnd).getTime();
+      if (!Number.isNaN(endTime) && endTime < Date.now()) return null;
+    }
+  } catch (err) {
+    log.error('Failed to check subscription for API key', { error: err, uid });
+    return null;
+  }
+  return { uid, keyHash };
 }
 
 export async function touchApiKeyLastUsed(keyHash: string): Promise<void> {

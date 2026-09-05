@@ -34,11 +34,14 @@ Express API (stateless relay) ◀───── HTTPS ──┘
 
 | Scope | Why Needed | In Use? |
 |-------|-----------|---------|
-| `meeting:read:admin` | Read meeting context (ID, topic, participants) to drive transcription pipeline | Yes — `server/src/routes/zoom.ts` |
-| `meeting:write` | Required for RTMS-based live transcription session setup | Yes |
-| `user:read` | Read the host's Zoom user profile to link accounts and handle deauth | Yes |
+| `meeting:read` | Read own-meeting context (ID, topic, participants) delivered via Event Subscriptions (`meeting.started` / `meeting.ended` / `meeting.participant_joined`) to drive transcription pipeline. User-level scope only — no org-wide meeting access needed. | Yes — webhook payload handling in `server/src/routes/zoom.ts` |
+| `user:read` | Read the host's own Zoom user profile (`GET /v2/users/me`) to link accounts and handle deauth lookup. | Yes — `server/src/routes/zoom.ts` OAuth callback |
 
-**Note for review**: The manifest previously listed `recording:read` — DealForge does **not** consume cloud recordings; it streams live transcription via RTMS. Do not request `recording:read`. Scopes are requested in `server/src/routes/zoom.ts:48`.
+**Why `meeting:read`, not `meeting:read:admin`:** DealForge only needs the authorizing user's own meeting context. Meeting ID/topic/participants arrive in webhook payloads (`payload.object.id/topic/participant`); no admin-level REST listing of all users' meetings is ever called. Requesting `:admin` would over-scope to org-wide meeting data and fail least-privilege review. Source of truth: `zoom-manifest.json:8-11` (`meeting:read`, `user:read`).
+
+**Why no `meeting:write`:** DealForge never creates/updates meetings via REST. Live transcription uses RTMS authenticated by SDK key/secret (`server/src/services/zoom-rtms.ts:69-75,159-181` — HMAC-signed `wss://rtms2.zoom.us` + `func: auth`), not OAuth `meeting:write`. The only Zoom REST call is `GET /v2/users/me` (`server/src/routes/zoom.ts:235`), which requires only `user:read`. No write operation exists, so `meeting:write` is omitted.
+
+**Note for review**: The manifest previously listed `recording:read` — DealForge does **not** consume cloud recordings; it streams live transcription via RTMS. Do not request `recording:read`. Canonical scopes are `meeting:read` + `user:read` per `zoom-manifest.json`. Known drift (no code change this wave): `server/src/routes/zoom.ts:131` currently requests `meeting:read:admin meeting:write user:read` and `client/src/pages/landing/PrivacyPolicy.tsx:58-63` repeats the admin/write wording — both must be narrowed to `meeting:read` + `user:read` in the code wave to match this doc and the manifest.
 
 ## 4. OAuth Token Handling
 

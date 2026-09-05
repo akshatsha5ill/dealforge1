@@ -16,5 +16,24 @@ services:
       - key: PORT
         value: 3000
       - key: CLIENT_URL
-        # Update this to your Vercel URL once deployed
-        value: https://your-vercel-app-url.vercel.app 
+        value: https://app.dealforge.io
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: ZOOM_WEBHOOK_SECRET_TOKEN
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: DODO_PRO_PRODUCT_ID
+        sync: false
+      - key: DODO_ENTERPRISE_PRODUCT_ID
+        sync: false 

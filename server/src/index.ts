@@ -22,11 +22,37 @@ const server = http.createServer(app);
 
 const allowedOrigin = config.clientUrl || 'http://localhost:5173';
 
+const isAllowedSocketOrigin = (origin: string | undefined): boolean => {
+  // Allow non-browser / same-origin requests with no Origin header.
+  if (!origin) return true;
+  if (origin === allowedOrigin) return true;
+  try {
+    const hostname = new URL(origin).hostname;
+    if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
+    if (hostname.endsWith('.vercel.app')) return true;
+  } catch {
+    // fall through to deny
+  }
+  return false;
+};
+
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigin,
+    origin: (origin, callback) => {
+      if (isAllowedSocketOrigin(origin)) return callback(null, true);
+      callback(new Error('Not allowed by CORS'));
+    },
     methods: ['GET', 'POST']
   }
+});
+
+// Log transport / CORS / handshake failures (server side of client connect_error).
+io.engine.on('connection_error', (err: { req?: unknown; code?: unknown; message?: unknown; context?: unknown }) => {
+  log.warn('Socket connection_error', {
+    code: (err as { code?: unknown }).code,
+    message: (err as { message?: unknown }).message,
+    context: (err as { context?: unknown }).context,
+  });
 });
 
 app.set('io', io);
@@ -48,6 +74,7 @@ io.use((socket: Socket & { user?: Record<string, unknown> }, next) => {
       next();
     })
     .catch((err: Error) => {
+      log.warn('Socket auth failed (client connect_error)', { message: err?.message });
       next(new Error('Authentication error'));
     });
 });
@@ -55,9 +82,30 @@ io.use((socket: Socket & { user?: Record<string, unknown> }, next) => {
 io.on('connection', (socket: Socket & { user?: Record<string, unknown> }) => {
   log.info('Client connected', { socketId: socket.id, uid: socket.user?.uid });
 
-  socket.on('join_meeting', (meetingId: string) => {
-    socket.join(`meeting:${meetingId}`);
-    log.info('Socket joined meeting room', { socketId: socket.id, meetingId, uid: socket.user?.uid });
+  socket.on('join_meeting', async (meetingId: string) => {
+    try {
+      const uid = socket.user?.uid as string | undefined;
+      if (!uid || typeof meetingId !== 'string' || !meetingId) {
+        log.warn('Socket denied join_meeting: missing uid/meetingId', { socketId: socket.id });
+        return;
+      }
+      const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+      const owner =
+        meta && typeof meta === 'object'
+          ? ((meta as Record<string, unknown>).ownerUid ??
+            (meta as Record<string, unknown>).uid ??
+            (meta as Record<string, unknown>).userId ??
+            (meta as Record<string, unknown>).owner)
+          : null;
+      if (typeof owner !== 'string' || owner !== uid) {
+        log.warn('Socket denied join_meeting: not meeting owner', { socketId: socket.id, meetingId, uid });
+        return;
+      }
+      socket.join(`meeting:${meetingId}`);
+      log.info('Socket joined meeting room', { socketId: socket.id, meetingId, uid });
+    } catch (err) {
+      log.warn('Socket join_meeting ownership check failed', { socketId: socket.id, meetingId, error: (err as Error)?.message });
+    }
   });
 
   socket.on('save_note', async (note: Record<string, unknown>) => {

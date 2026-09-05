@@ -54,6 +54,11 @@ export interface Lead {
   reasoning?: string;
   tags?: string[];
   customFields?: Record<string, any>;
+  consentStatus?: 'opted_in' | 'opted_out' | 'unsubscribed' | 'unknown' | string;
+  consentSource?: string;
+  consentCapturedAt?: string;
+  consentBasis?: string;
+  unsubscribedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

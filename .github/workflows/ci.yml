@@ -41,7 +41,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npx tsc --noEmit --workspace=server
+      - run: npm run typecheck --workspace=server
 
   test-client:
     name: Test Client

@@ -68,6 +68,8 @@ if (config.isProd) {
     ['FIREBASE_PROJECT_ID', config.firebase.projectId],
     ['FIREBASE_CLIENT_EMAIL', config.firebase.clientEmail],
     ['FIREBASE_PRIVATE_KEY', config.firebase.privateKey],
+    ['DODO_PRO_PRODUCT_ID', config.dodo.proProductId],
+    ['DODO_ENTERPRISE_PRODUCT_ID', config.dodo.enterpriseProductId],
   ];
   const missing = required.filter(([, val]) => !val);
   if (missing.length) {

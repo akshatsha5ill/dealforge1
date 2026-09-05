@@ -56,8 +56,7 @@ export default function PrivacyPolicy() {
       <h3 style={styles.h3}>2.3 Data you provide to Zoom</h3>
       <p style={styles.p}>
         When you use DealForge inside a Zoom meeting, we request the minimal Zoom OAuth scopes needed for the
-        feature to work: <strong style={styles.strong}>meeting:read:admin</strong> (meeting context and topic),
-        <strong style={styles.strong}> meeting:write</strong> (live transcription session), and
+        feature to work: <strong style={styles.strong}>meeting:read</strong> (meeting context and topic) and
         <strong style={styles.strong}> user:read</strong> (account linking and deauthorization). We do not access
         cloud recordings. Meeting participant names and audio appear in the live transcript only while you are in
         the meeting and are relayed to your own dashboard.
@@ -104,14 +103,61 @@ export default function PrivacyPolicy() {
       </ul>
 
       <h2 style={styles.h2}>6. Data Retention</h2>
-      <ul style={{ paddingLeft: '24px', marginTop: '8px' }}>
-        <li style={styles.li}><strong style={styles.strong}>Local data (IndexedDB):</strong> kept until you delete it, your browser evicts it, or you clear browser storage.</li>
-        <li style={styles.li}><strong style={styles.strong}>Relay buffer:</strong> in-memory only, purged automatically within 24 hours.</li>
-        <li style={styles.li}><strong style={styles.strong}>Account data:</strong> kept while your account is active; deleted on request or with your account.</li>
-        <li style={styles.li}><strong style={styles.strong}>OAuth tokens:</strong> stored encrypted for as long as your connection is active; deleted on disconnect or deauthorization.</li>
-        <li style={styles.li}><strong style={styles.strong}>Usage analytics:</strong> local, non-identifying counters retained at most 180 days in your browser.</li>
-        <li style={styles.li}><strong style={styles.strong}>Billing records:</strong> retained as required by law and for accounting (typically 7 years for tax purposes).</li>
-      </ul>
+      <p style={styles.p}>
+        We keep each category of data only as long as needed for the purpose described below. Meeting content has
+        no server-side copy — deletion in your browser removes it from DealForge entirely.
+      </p>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '12px', fontSize: '14px', lineHeight: 1.6 }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--text-primary)' }}>Data category</th>
+            <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--text-primary)' }}>Retention</th>
+            <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--text-primary)' }}>Notes</th>
+          </tr>
+        </thead>
+        <tbody style={{ color: 'var(--text-secondary)' }}>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Relay buffer (transcript segments, meeting context)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>24 hours</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>In-memory only, never written to permanent storage; purged automatically.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Email tracking events (open/click inbox)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>24 hours</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Transient inbox only; stored only with recipient consent, then pulled/deleted.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Local data (IndexedDB: transcripts, analyses, leads, emails, keys, settings)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>User-controlled</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Kept until you delete it, your browser evicts it, or you clear browser storage.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Free-tier transcript visibility</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>30 days visible (hide, not delete)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>On Free, transcripts older than 30 days show an upgrade prompt; the data stays in your IndexedDB and becomes visible again on upgrade. Pro/Enterprise: unlimited.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Usage analytics (local, non-identifying counters)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>180 days</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Stored in your browser only; events older than 180 days are pruned automatically.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Account data</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>While account is active</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Deleted on request or with your account (within 30 days, see Section 7).</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>OAuth tokens (Zoom, Gmail, Outlook)</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>While connection is active</td>
+            <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>Stored encrypted; deleted on disconnect, uninstall, or deauthorization.</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '8px' }}>Billing records</td>
+            <td style={{ padding: '8px' }}>7 years</td>
+            <td style={{ padding: '8px' }}>Retained as required by law for accounting/tax purposes.</td>
+          </tr>
+        </tbody>
+      </table>
 
       <h2 style={styles.h2}>7. Data Deletion &amp; Your Rights</h2>
       <p style={styles.p}>You have control over your data at all times:</p>
@@ -138,9 +184,13 @@ export default function PrivacyPolicy() {
 
       <h2 style={styles.h2}>9. Children's Privacy</h2>
       <p style={styles.p}>
-        DealForge is a business tool intended for professional sales use and is not directed to children under 13
-        (or the applicable minimum age in your jurisdiction). We do not knowingly collect personal information
-        from children.
+        DealForge is a business tool intended for professional sales use. You must be at least 18 years old (or the
+        age of majority in your jurisdiction; 16+ in the EU/EEA where that is the applicable minimum age) to use
+        DealForge, consistent with our Terms of Service §2 (Eligibility). DealForge is not directed to children,
+        and we do not knowingly collect personal information from anyone below the eligible age. If we learn that
+        we have collected personal information from an ineligible minor, we will delete it promptly. If you believe
+        a minor has provided us personal information, contact us at{' '}
+        <strong style={styles.strong}>support@dealforge.com</strong>.
       </p>
 
       <h2 style={styles.h2}>10. International Data Transfers</h2>

@@ -108,11 +108,25 @@ export async function getLastSyncedAt(uid: string): Promise<string | null> {
   }
 }
 
+function getSortTime(item: Record<string, unknown>): number {
+  const raw =
+    item.createdAt ?? item.startTime ?? item.updatedAt ?? item.analyzedAt ?? item.syncedAt ?? 0;
+  if (typeof raw === 'number') return raw;
+  if (typeof raw === 'string') {
+    const t = Date.parse(raw);
+    return Number.isNaN(t) ? 0 : t;
+  }
+  return 0;
+}
+
 async function listItems<T>(uid: string, name: string, limit = MAX_LIST_ITEMS): Promise<T[]> {
-  const snap = await collection(uid, 'items').orderBy('createdAt', 'desc').limit(limit).get();
+  const snap = await collection(uid, name).get();
   const items: T[] = [];
   snap.forEach((doc) => items.push(doc.data() as T));
-  return items;
+  items.sort(
+    (a, b) => getSortTime(b as Record<string, unknown>) - getSortTime(a as Record<string, unknown>),
+  );
+  return items.slice(0, limit);
 }
 
 export interface MeetingWithAnalysis extends SyncMeeting {
@@ -128,7 +142,7 @@ export async function getMeetingsWithAnalyses(uid: string, limit = MAX_LIST_ITEM
   const analyses = await listItems<SyncAnalysis>(uid, 'analyses', limit);
   const byMeeting = new Map<string, SyncAnalysis>();
   for (const analysis of analyses) {
-    byMeeting.set(analysis.meetingId, analysis);
+    if (!byMeeting.has(analysis.meetingId)) byMeeting.set(analysis.meetingId, analysis);
   }
   return meetings.map((meeting) => {
     const analysis = byMeeting.get(meeting.id);
@@ -147,8 +161,12 @@ export async function getMeetingDetail(uid: string, meetingId: string): Promise<
   const doc = await collection(uid, 'meetings').doc(meetingId).get();
   if (!doc.exists) return null;
   const meeting = doc.data() as SyncMeeting;
-  const analysisDoc = await collection(uid, 'analyses').where('meetingId', '==', meetingId).limit(1).get();
-  const analysis: SyncAnalysis | null = analysisDoc.empty ? null : (analysisDoc.docs[0].data() as SyncAnalysis);
+  const analysisDoc = await collection(uid, 'analyses').where('meetingId', '==', meetingId).get();
+  const docs = analysisDoc.docs.map((d) => d.data() as SyncAnalysis);
+  docs.sort(
+    (a, b) => getSortTime(b as Record<string, unknown>) - getSortTime(a as Record<string, unknown>),
+  );
+  const analysis: SyncAnalysis | null = docs.length === 0 ? null : docs[0];
   return {
     ...meeting,
     summary: analysis?.summary ?? null,

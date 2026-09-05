@@ -6,29 +6,28 @@
   "version": "1.0.0",
   "categories": ["Sales", "Productivity", "CRM"],
   "scopes": [
-    "meeting:read:admin",
-    "meeting:write",
+    "meeting:read",
     "user:read"
   ],
   "redirectUris": [
-    "https://YOUR_SERVER_DOMAIN/api/zoom/oauth/callback"
+    "https://api.dealforge.io/api/zoom/oauth/callback"
   ],
   "webhookUris": [
-    "https://YOUR_SERVER_DOMAIN/api/zoom/webhook"
+    "https://api.dealforge.io/api/zoom/webhook"
   ],
-  "deauthUri": "https://YOUR_SERVER_DOMAIN/api/zoom/deauth",
-  "verificationUri": "https://YOUR_SERVER_DOMAIN/zoomverify/verifyzoom.html",
+  "deauthUri": "https://api.dealforge.io/api/zoom/deauth",
+  "verificationUri": "https://app.dealforge.io/zoomverify/verifyzoom.html",
   "features": [
     "zoomApp",
     "meetingPanel"
   ],
-  "supportUrl": "https://YOUR_CLIENT_DOMAIN/support",
-  "privacyPolicyUrl": "https://YOUR_CLIENT_DOMAIN/privacy",
-  "termsOfServiceUrl": "https://YOUR_CLIENT_DOMAIN/terms",
+  "supportUrl": "https://app.dealforge.io/support",
+  "privacyPolicyUrl": "https://app.dealforge.io/privacy",
+  "termsOfServiceUrl": "https://app.dealforge.io/terms",
   "developerContact": {
     "name": "DealForge Engineering",
     "email": "engineering@dealforge.app"
   },
-  "clientId": "YOUR_ZOOM_CLIENT_ID",
-  "clientSecret": "YOUR_ZOOM_CLIENT_SECRET"
+  "clientId": "CONFIGURED_IN_ZOOM_MARKETPLACE_DASHBOARD_SEE_DOCS",
+  "clientSecret": "CONFIGURED_VIA_ENV_SEE_DOCS_DO_NOT_COMMIT"
 }

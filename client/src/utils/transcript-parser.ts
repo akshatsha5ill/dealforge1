@@ -6,23 +6,57 @@ export interface ParsedTranscript {
   durationSeconds: number;
 }
 
-const SPEAKER_LINE = /^([A-Za-z0-9 .\-'']+?)\s*:\s*(.+)$/;
+const SPEAKER_LINE = /^([\p{L}\p{N} .\-'’]+?)\s*:\s*(.+)$/u;
 const SRT_TIMESTAMP = /^(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{3})/;
 const VTT_TIMESTAMP = /^(\d{1,2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})\.(\d{3})/;
 const VTT_SPEAKER = /<v\s+([^>]+)>([\s\S]*?)<\/v>/;
 
 const toSeconds = (h: number, m: number, s: number, ms: number) => h * 3600 + m * 60 + s + ms / 1000;
 
+function normalizeContent(content: string): string {
+  // Strip BOM, normalize \r\n and lone \r to \n
+  return content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+}
+
+function isValidSpeaker(label: string, body: string): boolean {
+  if (!label || !body) return false;
+  // Reject URL-like speakers: contains ://, / or \
+  if (label.includes('://') || label.includes('/') || label.includes('\\')) return false;
+  // Reject when body is URL continuation (e.g. "https" + "://...".split -> "//...")
+  if (body.startsWith('//')) return false;
+  // Speaker must contain at least one letter (reject timestamps like "12:30")
+  if (!/\p{L}/u.test(label)) return false;
+  // Reject absurdly long "speakers" (sentences with colons)
+  if (label.length > 40) return false;
+  return true;
+}
+
 function extractSpeaker(text: string): { speaker?: string; text: string } {
   const vttMatch = VTT_SPEAKER.exec(text);
   if (vttMatch) {
-    return { speaker: vttMatch[1].trim(), text: vttMatch[2].trim() };
+    const speaker = vttMatch[1].trim();
+    const body = vttMatch[2].trim();
+    if (speaker && body && !speaker.includes('://') && !speaker.includes('/')) {
+      return { speaker, text: body };
+    }
+    return { text: body };
   }
-  const plainMatch = SPEAKER_LINE.exec(text.trim());
+  const trimmed = text.trim();
+  if (!trimmed) return { text: '' };
+  // Handle multiline cues: only the first line can hold "Speaker: ..."
+  const nl = trimmed.indexOf('\n');
+  const firstLine = (nl === -1 ? trimmed : trimmed.slice(0, nl)).trim();
+  const rest = nl === -1 ? '' : trimmed.slice(nl + 1).trim();
+  const plainMatch = SPEAKER_LINE.exec(firstLine);
   if (plainMatch) {
-    return { speaker: plainMatch[1].trim(), text: plainMatch[2].trim() };
+    const label = plainMatch[1].trim();
+    const bodyFirst = plainMatch[2].trim();
+    if (isValidSpeaker(label, bodyFirst)) {
+      const full = rest ? `${bodyFirst}\n${rest}` : bodyFirst;
+      return { speaker: label, text: full };
+    }
   }
-  return { text: text.trim() };
+  return { text: trimmed };
 }
 
 export function parseTranscriptFile(filename: string, content: string): ParsedTranscript {
@@ -34,7 +68,9 @@ export function parseTranscriptFile(filename: string, content: string): ParsedTr
 }
 
 function parseTimedTranscript(content: string, isSrt: boolean): ParsedTranscript {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const normalized = normalizeContent(content);
+  if (!normalized.trim()) return buildResult([]);
+  const lines = normalized.split('\n');
   const segments: TranscriptSegment[] = [];
   let i = 0;
 
@@ -51,10 +87,6 @@ function parseTimedTranscript(content: string, isSrt: boolean): ParsedTranscript
       const start = toSeconds(Number(h1), Number(m1), Number(s1), Number(ms1));
       const end = toSeconds(Number(h2), Number(m2), Number(s2), Number(ms2));
       i++;
-      // Skip cue identifier line for SRT (already consumed timestamp for VTT)
-      if (isSrt && i < lines.length && SRT_TIMESTAMP.test(lines[i].trim())) {
-        i++;
-      }
       const textLines: string[] = [];
       while (i < lines.length && lines[i].trim() !== '' && !VTT_TIMESTAMP.test(lines[i].trim()) && !SRT_TIMESTAMP.test(lines[i].trim())) {
         textLines.push(lines[i].trim());
@@ -74,7 +106,9 @@ function parseTimedTranscript(content: string, isSrt: boolean): ParsedTranscript
 }
 
 function parsePlainText(content: string): ParsedTranscript {
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  const normalized = normalizeContent(content);
+  if (!normalized.trim()) return buildResult([]);
+  const lines = normalized.split('\n');
   const segments: TranscriptSegment[] = [];
   let current: TranscriptSegment | null = null;
 
@@ -83,10 +117,21 @@ function parsePlainText(content: string): ParsedTranscript {
     if (!line) continue;
     const speakerMatch = SPEAKER_LINE.exec(line);
     if (speakerMatch) {
+      const label = speakerMatch[1].trim();
+      const body = speakerMatch[2].trim();
+      if (!isValidSpeaker(label, body)) {
+        // URL or invalid speaker-looking line: treat as continuation/body, not a new turn
+        if (current) {
+          current.text += '\n' + line;
+        } else {
+          segments.push({ speaker: 'Speaker 1', text: line, startTime: 0, endTime: 0 });
+        }
+        continue;
+      }
       if (current) segments.push(current);
       current = {
-        speaker: speakerMatch[1].trim(),
-        text: speakerMatch[2].trim(),
+        speaker: label,
+        text: body,
         startTime: 0,
         endTime: 0,
       };
