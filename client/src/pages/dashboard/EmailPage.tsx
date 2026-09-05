@@ -113,6 +113,7 @@ export default function EmailPage() {
           if (trackingData) {
             if (event.event === 'open') trackingData.opens += 1;
             if (event.event === 'click') trackingData.clicks += 1;
+            if (event.event === 'reply' || event.event === 'replied') trackingData.replied += 1;
             trackingData.lastActivity = event.timestamp || new Date().toISOString();
             await db.email_tracking.put(trackingData);
             hasUpdates = true;
@@ -195,39 +196,29 @@ export default function EmailPage() {
         useStore.getState().setError("Failed to load transcript context for AI. Drafting with limited context.");
       }
 
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/email/draft', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      const data = await apiClient.post<{ subject?: string; body?: string; content?: string }>('/email/draft', {
+        leadContext: {
+          name: lead?.name,
+          email: lead?.email,
+          company: lead?.company,
+          role: lead?.role,
+          score: lead?.score,
         },
-        body: JSON.stringify({
-          leadContext: {
-            name: lead?.name,
-            email: lead?.email,
-            company: lead?.company,
-            role: lead?.role,
-            score: lead?.score,
-          },
-          transcript: transcriptContext.slice(0, 4000),
-          previousEmails: campaigns
-            .filter(c => c.leadId === form.leadId)
-            .map(c => ({ subject: c.subject, body: c.body, sentAt: c.sentAt })),
-          apiKey: openAiKey,
-        }),
+        transcript: transcriptContext.slice(0, 4000),
+        previousEmails: campaigns
+          .filter(c => c.leadId === form.leadId)
+          .map(c => ({ subject: c.subject, body: c.body, sentAt: c.sentAt })),
+        apiKey: openAiKey,
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setForm(prev => ({
-          ...prev,
-          subject: data.subject || prev.subject,
-          body: data.body || data.content || prev.body,
-        }));
-      }
+      setForm(prev => ({
+        ...prev,
+        subject: data.subject || prev.subject,
+        body: data.body || data.content || prev.body,
+      }));
     } catch (err) {
       console.error('AI draft failed:', err);
+      toast.error('Failed to generate AI draft. Please try again.');
     } finally {
       setAiLoading(false);
     }

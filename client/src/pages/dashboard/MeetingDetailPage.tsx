@@ -261,6 +261,36 @@ export default function MeetingDetailPage() {
                   <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>Summary</h3>
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>{analysis.summary}</p>
                 </div>
+                <div style={{ marginBottom: '20px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>Action Items</h3>
+                  {Array.isArray(analysis.actionItems) && analysis.actionItems.length > 0 ? (
+                    <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
+                      {analysis.actionItems.map((item, idx) => (
+                        <li key={idx} style={{ marginBottom: '4px' }}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No action items identified.</p>
+                  )}
+                </div>
+                <div style={{ marginBottom: '20px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>Sentiment</h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
+                    {(analysis.sentiment?.overall ?? 'neutral').charAt(0).toUpperCase() + (analysis.sentiment?.overall ?? 'neutral').slice(1)}
+                    {' ('}
+                    {(() => {
+                      const overall = analysis.sentiment?.overall ?? 'neutral';
+                      if (overall === 'positive') return `${Math.round((analysis.sentiment?.positive ?? 0) * 100)}%`;
+                      if (overall === 'negative') return `${Math.round((analysis.sentiment?.negative ?? 0) * 100)}%`;
+                      return `${Math.round((analysis.sentiment?.neutral ?? 0) * 100)}%`;
+                    })()}
+                    {')'}
+                  </p>
+                </div>
+                <div style={{ marginBottom: '20px' }}>
+                  <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-secondary)' }}>Lead Score</h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>{typeof analysis.leadScore === 'number' ? analysis.leadScore : 0}/100</p>
+                </div>
                 {analysis.analyzedAt && (
                   <p className="data-text" style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
                     Analyzed {new Date(analysis.analyzedAt).toLocaleString()}

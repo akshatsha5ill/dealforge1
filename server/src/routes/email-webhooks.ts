@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { record, type SuppressionKind } from '../services/suppression-service.js';
+import { config } from '../config.js';
 import log from '../utils/logger.js';
 
 const router = express.Router();
@@ -103,6 +104,10 @@ router.post('/resend', async (req: Request, res: Response, next: NextFunction): 
         res.status(400).json({ status: 'error', error: 'Invalid webhook signature.' });
         return;
       }
+    } else if (config.isProd) {
+      log.error('RESEND_WEBHOOK_SECRET not configured, rejecting webhook');
+      res.status(500).json({ status: 'error', error: 'Webhook not configured.' });
+      return;
     } else {
       log.warn('RESEND_WEBHOOK_SECRET not configured, skipping Svix verification');
     }

@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { record } from '../services/suppression-service.js';
 
 const router = express.Router();
@@ -7,6 +8,53 @@ const router = express.Router();
 router.use(express.urlencoded({ extended: false }));
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// HMAC-signed email token (reuses tracking sign secret/algo).
+// Token forms accepted: raw hex HMAC(normalized-email), or signed
+// `email.sig` (tracking sign style). No secret (dev/test) allows
+// unsigned, mirroring tracking.ts legacy fallback.
+const getTrackingSecret = (): string =>
+  process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
+
+function verifyEmailToken(email: string, token: string): boolean {
+  if (!token) return false;
+  const secret = getTrackingSecret();
+  if (!secret) return true;
+  const normalized = email.trim().toLowerCase();
+  const expected = crypto.createHmac('sha256', secret).update(normalized).digest('hex');
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+  } catch {
+    // fall through to signed-email form
+  }
+  const idx = token.lastIndexOf('.');
+  if (idx > 0) {
+    const tokenEmail = token.slice(0, idx).trim().toLowerCase();
+    const sig = token.slice(idx + 1);
+    if (tokenEmail === normalized) {
+      try {
+        const a = Buffer.from(sig, 'utf8');
+        const b = Buffer.from(expected, 'utf8');
+        if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+function invalidTokenResponse(req: Request, res: Response): void {
+  res.status(403);
+  if (wantsJson(req)) {
+    res.json({ status: 'error', error: 'Invalid or missing unsubscribe token.' });
+    return;
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(errorPage('Invalid or missing unsubscribe link. Please use the link from your email.'));
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -30,15 +78,16 @@ function getEmailAndCampaign(req: Request): { email: string; campaign: string } 
   return { email, campaign };
 }
 
-function confirmPage(email: string, campaign: string): string {
+function confirmPage(email: string, campaign: string, token: string): string {
   const safeEmail = escapeHtml(email);
   const safeCampaign = escapeHtml(campaign);
+  const safeToken = escapeHtml(token);
   const campaignLine = campaign
     ? `<p style="margin:0 0 16px;color:#555;">Campaign: ${safeCampaign}</p>`
     : '';
   const action = `/unsubscribe?email=${encodeURIComponent(email)}${
     campaign ? `&amp;campaign=${encodeURIComponent(campaign)}` : ''
-  }`;
+  }&amp;token=${encodeURIComponent(token)}`;
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
@@ -50,6 +99,7 @@ function confirmPage(email: string, campaign: string): string {
     `<form method="POST" action="${action}">` +
     `<input type="hidden" name="email" value="${safeEmail}">` +
     (campaign ? `<input type="hidden" name="campaign" value="${safeCampaign}">` : '') +
+    `<input type="hidden" name="token" value="${safeToken}">` +
     `<button type="submit" style="padding:10px 20px;font-size:16px;cursor:pointer;">Confirm unsubscribe</button>` +
     `</form></body></html>`
   );
@@ -83,7 +133,7 @@ function wantsJson(req: Request): boolean {
   return String(req.get('accept') || '').includes('application/json');
 }
 
-// GET /unsubscribe?email=&campaign= — show confirm form.
+// GET /unsubscribe?email=&campaign=&token= — show confirm form.
 router.get('/', (req: Request, res: Response) => {
   const { email, campaign } = getEmailAndCampaign(req);
   if (!email || !EMAIL_RE.test(email)) {
@@ -96,11 +146,19 @@ router.get('/', (req: Request, res: Response) => {
     res.send(errorPage('Missing or invalid email address.'));
     return;
   }
+  // Token via query (one-click POSTs preserve query string); body fallback covered by getParam.
+  const token = getParam(req, 'token');
+  if (!verifyEmailToken(email, token)) {
+    invalidTokenResponse(req, res);
+    return;
+  }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(confirmPage(email, campaign));
+  res.send(confirmPage(email, campaign, token));
 });
 
 // POST /unsubscribe — record suppression (supports one-click RFC 8058).
+// Token read via getParam (body, query fallback) so one-click POSTs to the
+// signed List-Unsubscribe URL keep working.
 router.post('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { email, campaign } = getEmailAndCampaign(req);
@@ -112,6 +170,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction): Promis
       }
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(errorPage('Missing or invalid email address.'));
+      return;
+    }
+    const token = getParam(req, 'token');
+    if (!verifyEmailToken(email, token)) {
+      invalidTokenResponse(req, res);
       return;
     }
     const body = (req.body as Record<string, unknown>) || {};

@@ -10,6 +10,19 @@ import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit } from '../middl
 
 const router = express.Router();
 
+const TRANSCRIPT_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+
+function enforceTranscriptHistory(plan: string, meetingStartTime: string): void {
+  if (plan !== 'free') return;
+  const startTime = new Date(meetingStartTime).getTime();
+  if (Number.isNaN(startTime)) {
+    throw new AppError('Invalid meetingStartTime.', 400);
+  }
+  if (Date.now() - startTime > TRANSCRIPT_HISTORY_MS) {
+    throw new AppError('This meeting is older than 30 days and requires a Pro plan. Upgrade to access full transcript history.', 403);
+  }
+}
+
 interface AuthenticatedRequest extends Request {
   user?: { uid: string };
 }
@@ -17,6 +30,7 @@ interface AuthenticatedRequest extends Request {
 const analyzeSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   meetingId: z.string().min(1),
+  meetingStartTime: z.string().min(1, "Missing meeting start time"),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string().min(1, "Missing API key")
 });
@@ -29,10 +43,13 @@ router.post(
   validateRequest({ body: analyzeSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { transcript, meetingId, model } = req.body;
+      const { transcript, meetingId, meetingStartTime, model } = req.body;
       const apiKey = req.body.apiKey;
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+
+      const plan = (req as unknown as { plan?: string }).plan || 'free';
+      enforceTranscriptHistory(plan, meetingStartTime);
       
       const effectiveModel = model || 'openai';
       const uid = req.user?.uid;
@@ -63,6 +80,7 @@ const scoreSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   leadContext: z.record(z.any()),
   meetingId: z.string().min(1).optional(),
+  meetingStartTime: z.string().min(1, "Missing meeting start time"),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string().min(1, "Missing API key")
 });
@@ -75,10 +93,13 @@ router.post(
   validateRequest({ body: scoreSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { transcript, leadContext, model, meetingId } = req.body;
+      const { transcript, leadContext, model, meetingId, meetingStartTime } = req.body;
       const apiKey = req.body.apiKey;
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+
+      const plan = (req as unknown as { plan?: string }).plan || 'free';
+      enforceTranscriptHistory(plan, meetingStartTime);
 
       const effectiveModel = model || 'openai';
       const uid = req.user?.uid;

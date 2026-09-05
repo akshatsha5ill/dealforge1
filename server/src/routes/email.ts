@@ -1,13 +1,16 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { sendDraft, sendViaGmail, sendViaOutlook } from '../services/email-service.js';
 import { getValidAccessToken } from '../services/email-oauth.js';
 import { AIFactory } from '../services/ai-providers.js';
+import { recordAnalysisUsage } from '../services/usage-service.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit } from '../middleware/plan.js';
 import { validateRequest } from '../middleware/validateRequest.js';
-import { check as checkSuppression } from '../services/suppression-service.js';
+import { checkStrict } from '../services/suppression-service.js';
+import { registerClickTarget } from './tracking.js';
 
 // Re-export for any existing imports
 export { validateRequest } from '../middleware/validateRequest.js';
@@ -19,12 +22,15 @@ interface AuthenticatedRequest extends Request {
 }
 
 // FIX-EMAIL-E5: canonical tracking base + signed uid token.
-// Request-host base causes domain mismatch (proxy/internal host); raw `?uid=`
-// leaks the Firebase uid. Prefer TRACKING_BASE_URL and HMAC-sign the uid,
-// falling back to legacy behavior when env/secret is unset (dev/test).
+// TRACKING_BASE_URL is required in production to prevent Host header
+// poisoning (req Host is attacker-controlled and must never seed URLs
+// embedded in outgoing email HTML). Throw 500 when missing in prod.
 const getTrackingBaseUrl = (req: Request): string => {
   const canonical = (process.env.TRACKING_BASE_URL || '').trim().replace(/\/+$/, '');
   if (canonical) return canonical;
+  if (process.env.NODE_ENV === 'production') {
+    throw new AppError('TRACKING_BASE_URL is not configured.', 500);
+  }
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
   const host = req.get('host');
   return `${protocol}://${host}/api/tracking`;
@@ -45,6 +51,11 @@ const sendSchema = z.object({
   unsubscribeUrl: z.string().url().optional(),
   replyTo: z.string().email().optional(),
   isBulk: z.boolean().optional(),
+  // Privacy: open/click tracking in tracking.ts defaults OFF (no `consent`
+  // flag = do not store). Set `trackingConsent: true` only when the
+  // recipient gave tracking consent disclosed at send time; the sender then
+  // forwards `consent=1` on the pixel/click URLs so events may be stored.
+  trackingConsent: z.boolean().optional(),
   emailApiKey: z.string().min(1, "Missing Email API key").optional(),
   via: z.enum(['resend', 'gmail', 'outlook']).optional(),
 });
@@ -55,14 +66,18 @@ router.post(
   validateRequest({ body: sendSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { to, subject, body, campaignId, unsubscribeUrl, replyTo, isBulk, via = 'resend' } = req.body;
+      const { to, subject, body, campaignId, unsubscribeUrl, replyTo, isBulk, trackingConsent, via = 'resend' } = req.body;
       const emailApiKey = req.body.emailApiKey;
       delete req.body.emailApiKey;
       delete req.body.via;
       const uid = req.user?.uid;
 
-      if (to && await checkSuppression(to)) {
-        return res.status(410).json({ status: "error", message: "Email address is suppressed" });
+      try {
+        if (to && await checkStrict(to)) {
+          return res.status(410).json({ status: "error", message: "Email address is suppressed" });
+        }
+      } catch (suppressionError) {
+        return res.status(503).json({ status: "error", message: "Suppression check unavailable" });
       }
 
       let finalBody = body;
@@ -70,16 +85,22 @@ router.post(
       if (campaignId && uid) {
         const trackingBase = getTrackingBaseUrl(req);
         const trackingUid = encodeURIComponent(signTrackingUid(uid));
+        // Forward sender-supplied consent to tracking.ts (`?consent=1`).
+        // Absent/false = no flag = tracking defaults off (not stored).
+        const consentSuffix = trackingConsent ? '&consent=1' : '';
         
-        finalBody = finalBody.replace(/<a\s+(?:[^>]*?\s+)?href="([^"]*)"([^>]*)>/gi, (match: string, url: string, rest: string) => {
+        finalBody = finalBody.replace(/<a\s+(?:[^>]*?\s+)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))([^>]*)>/gi, (match: string, dqUrl: string, sqUrl: string, uqUrl: string, rest: string) => {
+          const url = dqUrl ?? sqUrl ?? uqUrl ?? '';
           if (url.startsWith('http')) {
-            const wrapped = `${trackingBase}/click/${campaignId}?uid=${trackingUid}&url=${encodeURIComponent(url)}`;
+            const h = registerClickTarget(campaignId, url);
+            const hSuffix = h ? `&h=${encodeURIComponent(h)}` : '';
+            const wrapped = `${trackingBase}/click/${campaignId}?uid=${trackingUid}&url=${encodeURIComponent(url)}${hSuffix}${consentSuffix}`;
             return `<a href="${wrapped}"${rest}>`;
           }
           return match;
         });
         
-        const pixel = `<img src="${trackingBase}/open/${campaignId}?uid=${trackingUid}" width="1" height="1" style="display:none;" />`;
+        const pixel = `<img src="${trackingBase}/open/${campaignId}?uid=${trackingUid}${consentSuffix}" width="1" height="1" style="display:none;" />`;
         finalBody = `${finalBody}${pixel}`;
       }
 
@@ -106,9 +127,23 @@ router.post(
 const draftSchema = z.object({
   transcript: z.string({ required_error: "invalid input" }).min(10, "invalid input").max(100000, "invalid input"),
   leadContext: z.record(z.any()).optional(),
+  meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string({ required_error: "invalid input" }).min(1, "invalid input")
 });
+
+const TRANSCRIPT_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+
+function enforceTranscriptHistory(plan: string, meetingStartTime: string): void {
+  if (plan !== 'free') return;
+  const startTime = new Date(meetingStartTime).getTime();
+  if (Number.isNaN(startTime)) {
+    throw new AppError('Invalid meetingStartTime.', 400);
+  }
+  if (Date.now() - startTime > TRANSCRIPT_HISTORY_MS) {
+    throw new AppError('This meeting is older than 30 days and requires a Pro plan. Upgrade to access full transcript history.', 403);
+  }
+}
 
 router.post(
   '/draft',
@@ -118,10 +153,18 @@ router.post(
   validateRequest({ body: draftSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
-      const { transcript, leadContext, model } = req.body;
+      const { transcript, leadContext, model, meetingStartTime } = req.body;
       const apiKey = req.body.apiKey;
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+
+      const plan = (req as unknown as { plan?: string }).plan || 'free';
+      if (plan === 'free' && !meetingStartTime) {
+        throw new AppError('Missing meeting start time', 400);
+      }
+      if (meetingStartTime) {
+        enforceTranscriptHistory(plan, meetingStartTime);
+      }
 
       const uid = req.user?.uid;
       
@@ -137,6 +180,8 @@ router.post(
       }
 
       const draft = await provider.generateEmailDraft(transcript, leadContext || {}) as Record<string, unknown>;
+      // Track usage for free-tier limit enforcement (best-effort)
+      await recordAnalysisUsage(uid, randomUUID());
       const subject = typeof draft.subject === 'string' ? draft.subject : '';
       const body = typeof draft.body === 'string' ? draft.body : typeof draft.content === 'string' ? (draft.content as string) : '';
       return res.status(200).json({ status: 'success', subject, body, draft });

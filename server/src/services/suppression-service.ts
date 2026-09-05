@@ -119,10 +119,37 @@ export async function getSuppression(email: string): Promise<SuppressionRecord |
 /**
  * Check whether an email is suppressed (bounce/complaint/unsubscribe/stop-on-reply).
  * Returns true when a suppression record exists, false otherwise.
+ * Display-safe / fail-open: returns false on Firestore outage (unless memory fallback has it).
+ * Do NOT use for pre-send enforcement — use checkStrict() instead.
  */
 export async function check(email: string): Promise<boolean> {
   const record = await getSuppression(email);
   return record !== null;
+}
+
+/**
+ * Strict pre-send guard: same semantics as check() but fails closed.
+ * Throws on Firestore outage instead of failing open to false, so callers
+ * must block send on error. Memory fallback is still consulted when Firestore
+ * succeeds (covers prior writes kept in memory), but never masks an outage.
+ * Not wired to callers this wave — check() remains for display/UI.
+ */
+export async function checkStrict(email: string): Promise<boolean> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+
+  const snap = await getFirebaseFirestore().collection(COLLECTION).doc(normalized).get();
+  if (snap.exists) {
+    const data = snap.data() as Partial<SuppressionRecord> | undefined;
+    if (data && typeof data.email === 'string' && isValidKind(data.kind) && typeof data.at === 'string') {
+      return true;
+    }
+    // Doc exists but malformed — treat as suppressed to stay compliant.
+    log.warn('Malformed suppression doc, treating as suppressed', { email: normalized });
+    return true;
+  }
+
+  return memoryStore.has(normalized);
 }
 
 /**

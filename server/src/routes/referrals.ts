@@ -22,6 +22,9 @@ router.post(
       if (!uid) {
         throw new AppError('Unauthorized', 401);
       }
+      if (req.user?.email_verified !== true) {
+        throw new AppError('Email verification required', 403);
+      }
       const plan = ((req as unknown as { plan?: string }).plan as 'free' | 'pro' | 'enterprise') || 'free';
       const result = await claimReferral(uid, (req.body as { code: string }).code, plan);
       res.status(200).json({ status: 'success', claimStatus: result.status, benefit: result.benefit, code: result.code });

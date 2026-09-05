@@ -68,17 +68,18 @@ function getBufferOwnerUid(meta: Record<string, unknown> | null | undefined): st
   return null;
 }
 
-// POST path: claim ownership on first authenticated create, migrate legacy
-// owner-less entries, enforce owner === uid otherwise.
+// POST path: require webhook-created meeting meta before any claim.
+// FIX: deny if no meeting meta exists — first-claim pre-registration allowed
+// any authenticated user to pre-claim an arbitrary victim meetingId via
+// POST /transcription or /notes, then meeting.started preserved the
+// attacker's ownerUid and locked out the real owner. Ownership may now only
+// be claimed on a meta previously created by meeting.started (or legacy
+// owner-less migration); unauthenticated webhook payload remains the sole
+// meeting creator.
 async function ensureBufferOwnership(meetingId: string, uid: string): Promise<boolean> {
   const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
   if (!meta) {
-    await bufferService.store(`meeting:${meetingId}`, {
-      ownerUid: uid,
-      createdAt: new Date().toISOString(),
-      status: 'active',
-    });
-    return true;
+    return false;
   }
   const owner = getBufferOwnerUid(meta);
   if (!owner) {
@@ -101,6 +102,25 @@ async function checkBufferOwnership(meetingId: string, uid: string): Promise<boo
 const zoomStartSchema = z.object({
   redirect: z.string().optional(),
 });
+
+export const ZOOM_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+// Single-use Zoom OAuth state cache, mirroring services/email-oauth.ts.
+// oauth/start stores the nonce here; oauth/callback consumes it. In-memory
+// only — sufficient for single-instance; use Redis/shared store if scaled
+// horizontally.
+const pendingZoomOAuthStates = new Map<string, number>();
+
+function pruneZoomOAuthStates(now = Date.now()): void {
+  for (const [nonce, exp] of pendingZoomOAuthStates) {
+    if (exp <= now) pendingZoomOAuthStates.delete(nonce);
+  }
+}
+
+// Test-only helper to reset single-use cache between tests.
+export const __clearZoomOAuthStateCache = (): void => {
+  pendingZoomOAuthStates.clear();
+};
 
 router.post('/oauth/start', verifyAuth, validateRequest({ body: zoomStartSchema }), (req: AuthRequest, res: Response): void => {
   const { clientId, redirectUri } = config.zoom;
@@ -129,7 +149,13 @@ router.post('/oauth/start', verifyAuth, validateRequest({ body: zoomStartSchema 
     redirect_uri: redirectUri,
     response_type: 'code',
     scope: 'meeting:read user:read',
-    state: encrypt(JSON.stringify({ uid: req.user!.uid, redirect: rawRedirect })),
+    state: (() => {
+      pruneZoomOAuthStates();
+      const nonce = crypto.randomBytes(16).toString('hex');
+      const exp = Date.now() + ZOOM_OAUTH_STATE_TTL_MS;
+      pendingZoomOAuthStates.set(nonce, exp);
+      return encrypt(JSON.stringify({ uid: req.user!.uid, redirect: rawRedirect, nonce, exp }));
+    })(),
   });
   res.status(200).json({ url: `https://zoom.us/oauth/authorize?${params.toString()}` });
 });
@@ -160,7 +186,19 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
   let stateRedirect: string | undefined;
   if (typeof state === 'string' && state) {
     try {
-      const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string };
+      const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
+      if (!parsed.uid) throw new Error('Missing uid in state');
+      // Require nonce + expiry to block state replay (mirrors email-oauth).
+      if (!parsed.nonce || typeof parsed.exp !== 'number') throw new Error('Missing nonce/exp in state');
+      if (Date.now() > parsed.exp) {
+        pendingZoomOAuthStates.delete(parsed.nonce);
+        throw new Error('Expired OAuth state');
+      }
+      pruneZoomOAuthStates();
+      const expectedExp = pendingZoomOAuthStates.get(parsed.nonce);
+      if (!expectedExp) throw new Error('Unknown or reused OAuth state');
+      // Consume single-use: replay of the same state must fail.
+      pendingZoomOAuthStates.delete(parsed.nonce);
       stateUid = parsed.uid || null;
       stateRedirect = parsed.redirect;
     } catch {
@@ -408,11 +446,25 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
       if (meetingId) {
         const existingMeta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
         const prevOwner = getBufferOwnerUid(existingMeta);
+        // Webhook has no req.user uid — resolve req-less owner from Zoom host_id
+        // (matches users.zoomUserId set at OAuth link time) so quota stays per-user.
+        let ownerUid: string | null = prevOwner;
+        const hostZoomId = payload?.object?.host_id;
+        if (!ownerUid && typeof hostZoomId === 'string' && hostZoomId.length > 0) {
+          try {
+            const snap = await getFirebaseFirestore().collection('users').where('zoomUserId', '==', hostZoomId).get();
+            snap.forEach((doc) => {
+              if (!ownerUid && doc.id) ownerUid = doc.id;
+            });
+          } catch (err) {
+            log.warn('Failed to resolve meeting owner from Zoom host_id', { meetingId, error: err });
+          }
+        }
         await bufferService.store(`meeting:${meetingId}`, {
           startedAt: new Date().toISOString(),
           status: 'active',
           topic,
-          ...(prevOwner ? { ownerUid: prevOwner } : {}),
+          ...(ownerUid ? { ownerUid } : {}),
           ...(existingMeta && typeof existingMeta === 'object' ? { createdAt: (existingMeta as Record<string, unknown>).createdAt ?? (existingMeta as Record<string, unknown>).startedAt } : {}),
         });
 
@@ -424,12 +476,18 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
           log.warn('Failed to establish RTMS connection, falling back to manual transcription', { meetingId });
         }
 
-        // Start transcript analysis pipeline
+        // Start transcript analysis pipeline (fail-closed: require ownerUid so
+        // quota in transcript-analysis-pipeline stays per-user, not per-meeting
+        // via `?? meetingId` fallback).
+        if (!ownerUid) {
+          log.warn('Skipping transcript analysis pipeline: no meeting owner resolved from webhook', { meetingId });
+          break;
+        }
         const io = req.app.get('io');
         if (io) {
           transcriptAnalysisPipeline.initialize(io);
         }
-        transcriptAnalysisPipeline.startPipeline(meetingId);
+        transcriptAnalysisPipeline.startPipeline(meetingId, ownerUid);
         log.info('Transcript analysis pipeline started for meeting', { meetingId });
       }
       break;
@@ -613,9 +671,23 @@ router.post('/deauth', async (req: Request, res: Response, next: express.NextFun
   return res.status(200).json({ status: 'ok' });
 });
 
+const ZOOM_PAYLOAD_MAX_BYTES = 10 * 1024;
+
+const withinZoomPayloadLimit = (val: unknown): boolean => {
+  if (Array.isArray(val)) return false;
+  try {
+    const s = typeof val === 'string' ? val : JSON.stringify(val);
+    return typeof s === 'string' && Buffer.byteLength(s, 'utf8') <= ZOOM_PAYLOAD_MAX_BYTES;
+  } catch {
+    return false;
+  }
+};
+
 const transcriptionSchema = z.object({
-  meetingId: z.string().min(1),
-  segment: z.any()
+  meetingId: z.string().min(1).max(200),
+  segment: z.union([z.string().max(ZOOM_PAYLOAD_MAX_BYTES), z.record(z.any())]).refine(withinZoomPayloadLimit, {
+    message: 'segment exceeds 10kb size limit',
+  }),
 });
 
 router.post('/transcription', verifyAuth, validateRequest({ body: transcriptionSchema }), async (req: AuthRequest, res: Response, next: express.NextFunction): Promise<void> => {
@@ -659,8 +731,10 @@ router.post('/transcription', verifyAuth, validateRequest({ body: transcriptionS
 });
 
 const notesSchema = z.object({
-  meetingId: z.string().min(1),
-  note: z.any()
+  meetingId: z.string().min(1).max(200),
+  note: z.union([z.string().max(ZOOM_PAYLOAD_MAX_BYTES), z.record(z.any())]).refine(withinZoomPayloadLimit, {
+    message: 'note exceeds 10kb size limit',
+  }),
 });
 
 router.post('/notes', verifyAuth, validateRequest({ body: notesSchema }), async (req: AuthRequest, res: Response, next: express.NextFunction): Promise<void> => {
@@ -715,18 +789,38 @@ router.delete('/buffer/:meetingId', verifyAuth, async (req: AuthRequest, res: Re
 });
 
 router.get('/rtms/status', verifyAuth, async (req: AuthRequest, res: Response) => {
+  const uid = req.user!.uid;
   const connectedMeetings = zoomRTMS.getConnectedMeetingIds();
+  const ownedMeetings: string[] = [];
+  for (const meetingId of connectedMeetings) {
+    try {
+      const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+      if (getBufferOwnerUid(meta) === uid) ownedMeetings.push(meetingId);
+    } catch {
+      // ignore per-meeting read failure — exclude from result
+    }
+  }
   res.status(200).json({ 
-    connectedMeetings,
-    isConnected: connectedMeetings.length > 0
+    connectedMeetings: ownedMeetings,
+    isConnected: ownedMeetings.length > 0
   });
 });
 
 router.get('/pipeline/status', verifyAuth, async (req: AuthRequest, res: Response) => {
+  const uid = req.user!.uid;
   const activePipelines = transcriptAnalysisPipeline.getActivePipelines();
+  const ownedPipelines: string[] = [];
+  for (const meetingId of activePipelines) {
+    try {
+      const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+      if (getBufferOwnerUid(meta) === uid) ownedPipelines.push(meetingId);
+    } catch {
+      // ignore per-meeting read failure — exclude from result
+    }
+  }
   res.status(200).json({
-    activePipelines,
-    activeCount: activePipelines.length
+    activePipelines: ownedPipelines,
+    activeCount: ownedPipelines.length
   });
 });
 

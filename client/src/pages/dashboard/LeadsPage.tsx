@@ -8,6 +8,7 @@ import { Loader2, RefreshCw } from 'lucide-react';
 import { toast } from '../../components/common/Toast';
 import { trackEvent } from '../../services/usage-analytics';
 import { apiClient } from '../../services/api/client';
+import { leadsDB } from '../../services/local-db/leads';
 
 const stages = ['Lead Identified', 'Discovery', 'Demo', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'];
 
@@ -73,8 +74,9 @@ export default function LeadsPage() {
       if (data.score && data.score.score != null) {
         const newScore = data.score.score;
         trackEvent('lead_rescored');
-        await db.leads.update(lead.id, { score: newScore });
-        setLeads(prev => prev.map(l => l.id === lead.id ? { ...l, score: newScore } : l));
+        const updatedLead = { ...lead, score: newScore, reasoning: data.score.reasoning ?? lead.reasoning, updatedAt: new Date().toISOString() };
+        await leadsDB.put(updatedLead);
+        setLeads(prev => prev.map(l => l.id === lead.id ? updatedLead : l));
       }
     } catch (err) {
       console.error('Failed to rescore lead:', err);
@@ -115,9 +117,9 @@ export default function LeadsPage() {
       );
 
       const scoreResult = res;
-      const updatedLead = { ...lead, score: scoreResult.score, reasoning: scoreResult.reasoning };
+      const updatedLead = { ...lead, score: scoreResult.score, reasoning: scoreResult.reasoning, updatedAt: new Date().toISOString() };
       
-      await db.leads.put(updatedLead);
+      await leadsDB.put(updatedLead);
       setLeads(leads.map(l => l.id === lead.id ? updatedLead : l));
     } catch (err: any) {
       setError(err.message || 'Failed to score lead.');

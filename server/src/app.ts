@@ -62,6 +62,27 @@ const app = express();
 app.set('trust proxy', 1);
 
 const allowedOrigin = config.clientUrl || 'http://localhost:5173';
+const allowedOrigins = new Set(
+  [allowedOrigin, ...(process.env.CLIENT_URLS || '').split(',').map((s) => s.trim()).filter(Boolean)],
+);
+const allowPreviewOrigins =
+  process.env.ALLOW_PREVIEW_ORIGINS !== undefined
+    ? process.env.ALLOW_PREVIEW_ORIGINS === 'true'
+    : !config.isProd;
+const isAllowedOrigin = (origin: string | undefined): boolean => {
+  // Allow non-browser / same-origin requests with no Origin header.
+  if (!origin) return true;
+  if (allowedOrigins.has(origin)) return true;
+  if (!allowPreviewOrigins) return false;
+  try {
+    const hostname = new URL(origin).hostname;
+    if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
+    if (hostname.endsWith('.vercel.app')) return true;
+  } catch {
+    // fall through to deny
+  }
+  return false;
+};
 
 app.use(helmet({
   contentSecurityPolicy: config.isProd ? {
@@ -94,16 +115,7 @@ const apiLimiter = rateLimit({
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow non-browser / same-origin requests with no Origin header.
-    if (!origin) return callback(null, true);
-    if (origin === allowedOrigin) return callback(null, true);
-    try {
-      const hostname = new URL(origin).hostname;
-      if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return callback(null, true);
-      if (hostname.endsWith('.vercel.app')) return callback(null, true);
-    } catch {
-      // fall through to deny
-    }
+    if (isAllowedOrigin(origin)) return callback(null, true);
     callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -195,6 +207,14 @@ const publicApiLimiter = rateLimit({
   message: { error: 'API rate limit exceeded. Please slow down your requests.' }
 });
 
+const emailWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many webhook requests' }
+});
+
 const requestLogger = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const start = Date.now();
   res.on('finish', () => {
@@ -213,13 +233,18 @@ app.use(requestLogger);
 
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/zoom', zoomRoutes);
+// Public Dodo webhook (HMAC-verified inside billing router) must bypass Firebase verifyAuth.
+app.use('/api/billing/webhook', billingLimiter, (req, res, next) => {
+  req.url = '/webhook';
+  billingRoutes(req, res, next);
+});
 app.use('/api/billing', verifyAuth, billingLimiter, billingRoutes);
 app.use('/api/referrals', verifyAuth, referralLimiter, referralRoutes);
 app.use('/api/tracking', trackingLimiter, trackingRoutes);
 app.use('/unsubscribe', trackingLimiter, unsubscribeRoutes);
 app.use('/api/ai', verifyAuth, aiLimiter, aiRoutes);
 app.use('/api/email/oauth', billingLimiter, emailOAuthRoutes);
-app.use('/api/email/webhooks', emailWebhooksRoutes);
+app.use('/api/email/webhooks', emailWebhookLimiter, emailWebhooksRoutes);
 app.use('/api/email', verifyAuth, requirePlan('pro'), emailLimiter, emailRoutes);
 app.use('/api/api-keys', verifyAuth, apiKeyLimiter, apiKeyRoutes);
 app.use('/api/sync', verifyAuth, requirePlan('pro'), syncLimiter, syncRoutes);

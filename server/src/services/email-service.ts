@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Resend } from 'resend';
 import { config } from '../config.js';
 import { AppError } from '../middleware/errorHandler.js';
@@ -60,10 +61,36 @@ const defaultReplyTo = (from: string): string => {
   return `support@${domain}`;
 };
 
+// Handler lives on the API (app.ts: app.use('/unsubscribe', ...)); the client
+// router has no /unsubscribe route, so a clientUrl-based link 404s.
+// Prefer an explicit API base; derive the API origin from TRACKING_BASE_URL
+// when set; legacy fallback is config.clientUrl.
+const getUnsubscribeBase = (baseOverride?: string): string => {
+  const explicit = (baseOverride || process.env.UNSUBSCRIBE_BASE_URL || process.env.API_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const trackingBase = (process.env.TRACKING_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (trackingBase) {
+    const origin = trackingBase.replace(/\/api\/tracking$/, '').replace(/\/api$/, '');
+    if (/^https?:\/\//i.test(origin)) return origin.replace(/\/+$/, '');
+  }
+  return (config.clientUrl || 'http://localhost:3000').replace(/\/$/, '');
+};
+
+// Must match routes/unsubscribe.ts verifyEmailToken: HMAC-SHA256 of the
+// normalized email with TRACKING_SECRET || SESSION_SECRET. Empty when no
+// secret (dev/test verify allows unsigned, mirroring tracking.ts).
+const signUnsubscribeEmail = (to: string): string => {
+  const secret = process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
+  if (!secret) return '';
+  return crypto.createHmac('sha256', secret).update(to.trim().toLowerCase()).digest('hex');
+};
+
 const buildUnsubscribeUrl = (to: string, campaignId?: string, baseOverride?: string): string => {
-  const base = (baseOverride || config.clientUrl || 'http://localhost:3000').replace(/\/$/, '');
+  const base = getUnsubscribeBase(baseOverride);
   const params = new URLSearchParams({ email: to });
   if (campaignId) params.set('campaign', campaignId);
+  const token = signUnsubscribeEmail(to);
+  if (token) params.set('token', token);
   return `${base}/unsubscribe?${params.toString()}`;
 };
 

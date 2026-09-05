@@ -148,6 +148,27 @@ function parsePlainText(content: string): ParsedTranscript {
 
 function buildResult(segments: TranscriptSegment[]): ParsedTranscript {
   const fullText = segments.map((s) => (s.speaker ? `${s.speaker}: ${s.text}` : s.text)).join('\n\n');
-  const durationSeconds = segments.length > 0 ? Math.max(0, segments[segments.length - 1].endTime) : 0;
+  let durationSeconds = segments.length > 0 ? Math.max(0, segments[segments.length - 1].endTime) : 0;
+  if (durationSeconds === 0 && segments.length > 0) {
+    const trimmed = fullText.trim();
+    const totalWords = trimmed ? trimmed.split(/\s+/).length : 0;
+    durationSeconds = (totalWords / 150) * 60;
+    // Distribute estimated time across segments proportional to word count
+    // so segment start/end stay consistent with durationSeconds.
+    if (totalWords > 0) {
+      let cursor = 0;
+      for (const seg of segments) {
+        const segLabel = seg.speaker ? `${seg.speaker} ${seg.text}`.trim() : seg.text.trim();
+        const segWords = segLabel ? segLabel.split(/\s+/).length : 0;
+        const share = segWords / totalWords;
+        const segDur = durationSeconds * share;
+        seg.startTime = cursor;
+        seg.endTime = cursor + segDur;
+        cursor += segDur;
+      }
+      // Fix floating-point drift on the last segment.
+      segments[segments.length - 1].endTime = durationSeconds;
+    }
+  }
   return { segments, fullText, durationSeconds };
 }

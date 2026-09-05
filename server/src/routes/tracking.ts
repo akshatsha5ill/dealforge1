@@ -8,12 +8,15 @@ import log from '../utils/logger.js';
 
 const router = express.Router();
 
-// FIX-EMAIL-E6: click wrapper must not break external links. The previous
-// host allowlist (localhost + clientUrl) forced every external destination
-// back to /dashboard/meetings. Allow any http/https destination, but only
-// after HMAC-verifying the signed uid token (prevents open-redirect abuse).
-// javascript:/data:/vbscript: are always blocked; anything invalid falls
-// back to clientUrl.
+// FIX: click wrapper binds destination to campaign to prevent trusted-domain
+// open redirect. isSafeRedirect alone allows ANY http/https URL and
+// verifyTrackingUid only authenticates the uid — not the url — so a holder
+// of one valid signed uid could forge
+// /click/:campaignId?uid=<valid>&url=https://evil… and phish from the
+// trusted tracking domain. Each send-time target must be stored via
+// registerClickTarget(); on click only redirect when the url hash matches
+// the stored mapping, else fall back to clientUrl. javascript:/data:/
+// vbscript: are always blocked; missing mapping denies to clientUrl.
 const getTrackingSecret = (): string =>
   process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
 
@@ -21,8 +24,9 @@ const verifyTrackingUid = (token?: string): string | null => {
   if (!token) return null;
   const secret = getTrackingSecret();
   // Legacy dev/test fallback (mirrors email.ts signTrackingUid): no secret
-  // means the raw uid was sent unsigned.
-  if (!secret) return token;
+  // means the raw uid was sent unsigned. Fail-closed in prod: reject
+  // unsigned when no secret is configured.
+  if (!secret) return config.isProd ? null : token;
   const idx = token.lastIndexOf('.');
   if (idx <= 0) return null;
   const uid = token.slice(0, idx);
@@ -60,6 +64,58 @@ const trackingInbox = new Map<string, any[]>();
 const MAX_EVENTS_PER_USER = 500;
 const INBOX_TTL = 24 * 60 * 60 * 1000;
 const inboxTimestamps = new Map<string, number>();
+
+// Bind click URL to campaign: store target at send time, lookup on click.
+// registerClickTarget() is called at send time (email.ts send flow wraps each
+// <a href>); GET /click/:campaignId requires the url hash to match the stored
+// mapping, else falls back to clientUrl. Missing mapping denies to clientUrl.
+const CLICK_TARGET_TTL_SEC = 30 * 24 * 60 * 60;
+const clickTargets = new Map<string, { url: string; expires: number }>();
+
+export const hashClickUrl = (campaignId: string, url: string): string => {
+  const secret = getTrackingSecret();
+  const input = `${campaignId}:${url}`;
+  if (secret) return crypto.createHmac('sha256', secret).update(input).digest('hex');
+  return crypto.createHash('sha256').update(input).digest('hex');
+};
+
+const clickTargetKey = (campaignId: string, hash: string): string =>
+  `clicktarget:${campaignId}:${hash}`;
+
+// Store target at send time. Returns url hash to embed as &h= in click URL.
+export const registerClickTarget = (campaignId: string, url: string): string | null => {
+  if (!campaignId || !url) return null;
+  if (!isSafeRedirect(url)) return null;
+  const hash = hashClickUrl(campaignId, url);
+  const key = clickTargetKey(campaignId, hash);
+  clickTargets.set(key, { url, expires: Date.now() + CLICK_TARGET_TTL_SEC * 1000 });
+  if (useRedis && redis) {
+    redis.set(key, url, 'EX', CLICK_TARGET_TTL_SEC).catch(() => {});
+  }
+  return hash;
+};
+
+const lookupClickTarget = async (campaignId: string, hash: string): Promise<string | null> => {
+  if (!campaignId || !hash) return null;
+  const key = clickTargetKey(campaignId, hash);
+  const mem = clickTargets.get(key);
+  if (mem) {
+    if (Date.now() > mem.expires) {
+      clickTargets.delete(key);
+    } else {
+      return mem.url;
+    }
+  }
+  if (useRedis && redis) {
+    try {
+      const v: unknown = await redis.get(key);
+      if (typeof v === 'string' && v) return v;
+    } catch {
+      // fall through to miss
+    }
+  }
+  return null;
+};
 
 const initRedis = async () => {
   if (config.redis.url) {
@@ -124,6 +180,9 @@ const cleanupInbox = () => {
       trackingInbox.delete(userId);
       inboxTimestamps.delete(userId);
     }
+  }
+  for (const [key, entry] of clickTargets.entries()) {
+    if (now > entry.expires) clickTargets.delete(key);
   }
 };
 const cleanupInterval = setInterval(cleanupInbox, 60 * 60 * 1000);
@@ -212,13 +271,14 @@ router.get('/open/:campaignId', validateRequest({ query: openSchema }), (req, re
 
 const clickSchema = z.object({
   url: z.string().url().optional(),
+  h: z.string().max(256).optional(),
   uid: z.string().max(256).optional(),
   consent: z.string().optional()
 });
 
-router.get('/click/:campaignId', validateRequest({ query: clickSchema }), (req, res) => {
+router.get('/click/:campaignId', validateRequest({ query: clickSchema }), async (req, res) => {
   const { campaignId } = req.params;
-  const { url, uid, consent } = req.query as { url?: string, uid?: string, consent?: string };
+  const { url, h, uid, consent } = req.query as { url?: string, h?: string, uid?: string, consent?: string };
 
   res.set('Cache-Control', 'private, no-store');
 
@@ -233,8 +293,35 @@ router.get('/click/:campaignId', validateRequest({ query: clickSchema }), (req, 
     });
   }
 
-  const safeUrl = url && verifiedUid && isSafeRedirect(url) ? url : `${config.clientUrl}/dashboard/meetings`;
-  res.redirect(safeUrl);
+  const fallback = `${config.clientUrl}/dashboard/meetings`;
+  let boundUrl: string | null = null;
+  if (verifiedUid && url && isSafeRedirect(url)) {
+    const expected = hashClickUrl(campaignId, url);
+    // If caller supplies h it must equal the expected url hash (binds url to campaign).
+    let hashOk: boolean;
+    if (typeof h === 'string' && h.length > 0) {
+      try {
+        const a = Buffer.from(h, 'utf8');
+        const b = Buffer.from(expected, 'utf8');
+        hashOk = a.length === b.length && crypto.timingSafeEqual(a, b);
+      } catch {
+        hashOk = false;
+      }
+    } else {
+      // No h supplied: still require stored mapping for computed hash (deny arbitrary url param).
+      hashOk = true;
+    }
+    if (hashOk) {
+      const stored = await lookupClickTarget(campaignId, expected);
+      if (stored && stored === url && isSafeRedirect(stored)) boundUrl = stored;
+    }
+  } else if (verifiedUid && typeof h === 'string' && h.length > 0 && !url) {
+    // Token-only link: resolve target solely from stored mapping.
+    const stored = await lookupClickTarget(campaignId, h);
+    if (stored && isSafeRedirect(stored)) boundUrl = stored;
+  }
+  // Mapping missing or mismatch => deny to clientUrl (fail-closed).
+  res.redirect(boundUrl ?? fallback);
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

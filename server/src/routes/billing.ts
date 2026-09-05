@@ -25,6 +25,23 @@ function getProductIdForPlan(plan: string): string | null {
   return null;
 }
 
+// Plan minimums in cents: pro $29, enterprise $79. Amounts from the gateway
+// may be in cents (2900) or dollars (29) — accept either unit. Missing
+// amounts fall back to allow (product check already gates the plan).
+const PLAN_MINIMUM_CENTS: Record<'pro' | 'enterprise', number> = {
+  pro: 2900,
+  enterprise: 7900,
+};
+
+function amountMeetsPlanMinimum(amount: number, plan: 'pro' | 'enterprise'): boolean {
+  if (!Number.isFinite(amount)) return false;
+  const minCents = PLAN_MINIMUM_CENTS[plan];
+  if (amount >= minCents) return true;
+  // Tolerate dollars (29/79): only values plausibly in dollars (<1000) count,
+  // so 2899c ($28.99) can't pass as $2899.
+  return amount >= minCents / 100 && amount < 1000;
+}
+
 // One-time payments are NOT forever: they grant Pro for a fixed window and
 // require renewal. Subscription webhooks carry next_billing_date; one-time
 // verify/Payment flows must synthesize currentPeriodEnd instead of null.
@@ -140,8 +157,8 @@ router.post('/verify', verifyAuth, validateRequest({ body: verifySchema }), asyn
       (metadata as Record<string, unknown>)?.amount,
     ];
     const numericAmounts = candidateAmounts.filter((v): v is number => typeof v === 'number');
-    if (numericAmounts.length > 0 && !numericAmounts.some((a) => a > 0)) {
-      return next(new AppError('Session has no paid amount', 400));
+    if (numericAmounts.length > 0 && !numericAmounts.some((a) => amountMeetsPlanMinimum(a, plan))) {
+      return next(new AppError('Session amount below plan minimum', 400));
     }
 
     const db = getFirebaseFirestore();
@@ -388,9 +405,9 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const amounts = extractWebhookAmounts(data as any);
-        if (amounts.length > 0 && !amounts.some((a) => a > 0)) {
-          log.warn('Webhook has no paid amount, ignoring', { subscriptionId: data.subscription_id });
-          await markProcessed({ ignored: 'no-amount', subscriptionId: data.subscription_id });
+        if (amounts.length > 0 && !amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
+          log.warn('Webhook amount below plan minimum, ignoring', { subscriptionId: data.subscription_id });
+          await markProcessed({ ignored: 'below-minimum', subscriptionId: data.subscription_id });
           return res.status(200).json({ status: 'ok' });
         }
       } else if (data.status === 'cancelled' || data.status === 'expired') {
@@ -440,9 +457,9 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
           } else {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const amounts = extractWebhookAmounts(data as any);
-            if (amounts.length > 0 && !amounts.some((a) => a > 0)) {
-              log.warn('Payment webhook has no paid amount, ignoring', { userId });
-              await markProcessed({ ignored: 'no-amount', userId });
+            if (amounts.length > 0 && !amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
+              log.warn('Payment webhook amount below plan minimum, ignoring', { userId });
+              await markProcessed({ ignored: 'below-minimum', userId });
             } else {
               const plan = parsed;
               const userRef = getFirebaseFirestore().collection('users').doc(userId).collection('subscription').doc('current');

@@ -29,7 +29,7 @@ export default function DashboardPage() {
         db.email_campaigns.toArray(),
         getMonthlyAnalyzedCount(),
       ]);
-      setStats({ meetings: meetings.length, leads: leads.length, deals: deals.length, emails: emails.length });
+      setStats({ meetings: meetings.length, leads: leads.length, deals: deals.length, emails: emails.filter((e: any) => e.status === 'sent').length });
       setRecentMeetings(meetings.slice(-5).reverse());
       setMeetingTrendData(buildMeetingTrendData(meetings));
       setPipelineData(buildPipelineData(deals));

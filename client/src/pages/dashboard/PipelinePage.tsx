@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, Lock } from 'lucide-react';
 import { dealsDB } from '../../services/local-db/deals';
+import { leadsDB } from '../../services/local-db/leads';
 import { STAGES, formatCurrency } from '../../components/pipeline/PipelineCard';
 import { PipelineColumn } from '../../components/pipeline/PipelineColumn';
 import { NewDealModal, DealFormData } from '../../components/pipeline/NewDealModal';
@@ -8,7 +10,7 @@ import { useStore } from '../../store';
 import { canUseFeature } from '../../services/feature-gate';
 import UpgradePrompt from '../../components/common/UpgradePrompt';
 import { trackEvent } from '../../services/usage-analytics';
-import { Deal } from '../../types';
+import { Deal, Lead } from '../../types';
 import { confirm } from '../../components/common/ConfirmDialog';
 import { toast } from '../../components/common/Toast';
 import '../../components/pipeline/Pipeline.css';
@@ -17,6 +19,8 @@ export default function PipelinePage() {
   const plan = useStore((state) => state.subscription?.plan);
   const readOnly = !canUseFeature(plan, 'pipeline');
   const [deals, setDeals] = useState<Deal[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [selectedLeadId, setSelectedLeadId] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
@@ -24,6 +28,11 @@ export default function PipelinePage() {
   const loadDeals = useCallback(async () => {
     const all = await dealsDB.getAll();
     setDeals(all);
+    const allLeads = await leadsDB.getAll();
+    setLeads(allLeads);
+    setSelectedLeadId((prev) =>
+      prev && allLeads.some((l) => l.id === prev) ? prev : (allLeads[0]?.id ?? '')
+    );
   }, []);
 
   useEffect(() => {
@@ -150,10 +159,15 @@ export default function PipelinePage() {
 
   const handleSubmitModal = async (form: DealFormData) => {
     if (readOnly) return;
+    const leadId = selectedLeadId || leads[0]?.id || '';
+    if (!leadId) {
+      toast.error('No leads yet. Create a lead first.');
+      return;
+    }
     const stageCount = deals.filter(d => d.stage === form.stage).length;
     await dealsDB.put({
       id: crypto.randomUUID(),
-      leadId: '',
+      leadId,
       title: form.title,
       stage: form.stage,
       value: parseFloat(form.value) || 0,
@@ -201,6 +215,29 @@ export default function PipelinePage() {
             description="View your pipeline in read-only mode. Upgrade to Pro to create deals, drag-and-drop between stages, and track probability."
             compact
           />
+        </div>
+      )}
+
+      {!readOnly && (
+        <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <label htmlFor="pipeline-lead-select" style={{ fontSize: '14px', fontWeight: 600 }}>Lead:</label>
+          {leads.length === 0 ? (
+            <span style={{ fontSize: '14px' }}>
+              No leads yet. <Link to="/dashboard/leads">Go to All leads</Link> to create one.
+            </span>
+          ) : (
+            <select
+              id="pipeline-lead-select"
+              className="form-select"
+              style={{ maxWidth: '300px' }}
+              value={selectedLeadId}
+              onChange={(e) => setSelectedLeadId(e.target.value)}
+            >
+              {leads.map((l) => (
+                <option key={l.id} value={l.id}>{l.name} — {l.company}</option>
+              ))}
+            </select>
+          )}
         </div>
       )}
 

@@ -19,12 +19,13 @@ class DripCampaignWorker {
       return;
     }
 
-    // Compliance gate: require explicit opt-in. Skip (do not send) if unsubscribed.
-    const consentStatus = (lead as unknown as Record<string, unknown>)?.consentStatus;
+    // Compliance gate: fail-closed — require explicit opted_in to send.
+    const rawConsent = (lead as unknown as Record<string, unknown>)?.consentStatus;
+    const consentStatus = typeof rawConsent === 'string' ? rawConsent.trim().toLowerCase() : rawConsent;
     if (consentStatus !== 'opted_in') {
       await db.drip_campaigns.update(campaign.id, {
-        status: 'suppressed',
-        error: `Skipped: consentStatus is '${String(consentStatus ?? 'missing')}' (require opted_in; unsubscribed/opted_out must not send)`,
+        status: 'needs_consent',
+        error: `Skipped: consentStatus is '${String(rawConsent ?? 'missing')}' (opted_in required to send)`,
         nextRunAt: null,
       });
       return;

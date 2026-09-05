@@ -21,10 +21,21 @@ export const getPlanForUser = async (uid: string): Promise<'free' | 'pro' | 'ent
   const status = data?.status as string | undefined;
   if (status === 'cancelled' || status === 'past_due' || status === 'expired') return 'free';
   const currentPeriodEnd = data?.currentPeriodEnd as string | null | undefined;
-  if (currentPeriodEnd) {
+  if (typeof currentPeriodEnd === 'string' && currentPeriodEnd) {
     const endTime = new Date(currentPeriodEnd).getTime();
-    if (!Number.isNaN(endTime) && endTime < Date.now()) return 'free';
+    if (!Number.isNaN(endTime)) {
+      if (endTime < Date.now()) return 'free';
+      return plan;
+    }
+    // Invalid date string falls through to fail-closed handling below.
   }
+  // Fail-closed: null/missing/invalid expiry must not grant perpetual access.
+  // Allow a 30d grace from updatedAt so transient webhook nulls don't lock out
+  // immediately; otherwise treat as expired. Covers null + no subscriptionId.
+  const updatedAt = data?.updatedAt as string | null | undefined;
+  const updatedTime = typeof updatedAt === 'string' && updatedAt ? new Date(updatedAt).getTime() : NaN;
+  const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+  if (Number.isNaN(updatedTime) || Date.now() - updatedTime > GRACE_MS) return 'free';
   return plan;
 };
 

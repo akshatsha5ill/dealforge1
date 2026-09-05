@@ -3,6 +3,7 @@ import { Send, Sparkles, FileText, Plus, Trash2 } from 'lucide-react';
 import { RichTextEditor } from '../common/RichTextEditor';
 import { Lead, EmailSequenceStep } from '../../types';
 import { IntegrationInfo } from '../../services/email-integration';
+import { useStore } from '../../store';
 import './Email.css';
 
 interface EmailForm {
@@ -61,6 +62,9 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
 
   const connectedProviders = integrations.filter((i) => i.connected).map((i) => i.provider);
   const isDrip = form.type === 'drip_campaign';
+  const anthropicKey = useStore((s) => s.anthropicKey);
+  const geminiKey = useStore((s) => s.geminiKey);
+  const hasAiKey = !!(openAiKey || anthropicKey || geminiKey);
 
   const addSequenceStep = () => {
     setForm((prev) => ({
@@ -89,7 +93,7 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
     <div className="ds-panel compose-card">
       <div className="compose-header">
         <h2 className="compose-title">Compose Email</h2>
-        {openAiKey && (
+        {hasAiKey && (
           <button
             onClick={handleAiDraft}
             disabled={!form.leadId || aiLoading}
