@@ -1,5 +1,6 @@
 import { useEffect, useState, memo, useRef } from 'react';
-import { useWebSocket } from '../../hooks/useWebSocket';
+import { useOutletContext } from 'react-router-dom';
+import { useWebSocket, getMeetingIdFromZoomContext } from '../../hooks/useWebSocket';
 
 interface Transcript {
   speaker?: string;
@@ -18,8 +19,14 @@ TranscriptItem.displayName = 'TranscriptItem';
 
 const TranscriptionView = () => {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
-  const { subscribe } = useWebSocket();
+  const { subscribe, joinMeeting } = useWebSocket();
+  const outletContext = useOutletContext<{ zoomContext?: Record<string, string | number | boolean> | null } | null>();
+  const meetingId = getMeetingIdFromZoomContext(outletContext?.zoomContext ?? null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (meetingId) joinMeeting(meetingId);
+  }, [meetingId, joinMeeting]);
 
   useEffect(() => {
     const unsubscribe = subscribe('transcription', (segment: Transcript) => {

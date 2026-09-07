@@ -82,11 +82,21 @@ export default function BillingPage() {
 
       if (!verified) {
         try {
-          await apiClient.verifyCheckout(sessionId, pendingPlan);
-          verified = true;
-          localStorage.removeItem('pending_plan');
-        } catch {
-          // verify will return pending status on failure, continue polling
+          const result = await apiClient.verifyCheckout(sessionId, pendingPlan);
+          // Server returns 200 { status: 'pending' } while payment is not
+          // yet succeeded — only stop retrying once verify is terminal.
+          if (result && (result as { status?: string }).status !== 'pending') {
+            verified = true;
+            localStorage.removeItem('pending_plan');
+          }
+        } catch (err) {
+          // 409 = session already processed (idempotent replay) — treat as verified.
+          const msg = err instanceof Error ? err.message : String(err ?? '');
+          if (msg.includes('409') || msg.toLowerCase().includes('already processed')) {
+            verified = true;
+            localStorage.removeItem('pending_plan');
+          }
+          // Other transient verify errors (4xx/5xx/network) — retry next poll until timeout.
         }
       }
 
@@ -259,10 +269,11 @@ export default function BillingPage() {
                   </button>
                 ) : isDowngrade ? (
                   <button
-                    className={styles.planCardButton}
-                    disabled
+                    className={`${styles.planCardButton} ${styles.primary}`}
+                    onClick={() => handleCheckout(key)}
+                    disabled={checkoutLoading !== null}
                   >
-                    Downgrade
+                    {checkoutLoading === key ? 'Redirecting...' : 'Downgrade'}
                   </button>
                 ) : null}
               </div>

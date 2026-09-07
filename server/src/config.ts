@@ -26,7 +26,7 @@ export const config = {
   
   email: {
     resendApiKey: process.env.RESEND_API_KEY,
-    from: process.env.EMAIL_FROM || 'DealForge <noreply@dealforge.app>',
+    from: process.env.EMAIL_FROM || 'DealForge <support@dealforge.app>',
     googleClientId: process.env.GOOGLE_CLIENT_ID,
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
     microsoftClientId: process.env.MICROSOFT_CLIENT_ID,
@@ -65,6 +65,7 @@ if (config.isProd) {
     ['ZOOM_WEBHOOK_SECRET_TOKEN', config.zoom.webhookSecretToken],
     ['SESSION_SECRET', process.env.SESSION_SECRET],
     ['TRACKING_SECRET', process.env.TRACKING_SECRET],
+    ['TRACKING_BASE_URL', process.env.TRACKING_BASE_URL],
     ['ENCRYPTION_KEY', process.env.ENCRYPTION_KEY],
     ['RESEND_API_KEY', config.email.resendApiKey],
     ['FIREBASE_PROJECT_ID', config.firebase.projectId],

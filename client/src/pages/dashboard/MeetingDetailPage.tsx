@@ -14,7 +14,7 @@ import { Meeting, Transcript, Analysis } from '../../types';
 export default function MeetingDetailPage() {
   const { id } = useParams();
 
-  const { openAiKey, anthropicKey } = useStore();
+  const { openAiKey, anthropicKey, geminiKey } = useStore();
   const plan = useStore((state) => state.subscription?.plan);
   const [meeting, setMeeting] = useState<Meeting | null>(null);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
@@ -63,7 +63,7 @@ export default function MeetingDetailPage() {
         return;
       }
       const transcriptText = transcript.fullText;
-      const apiKey = openAiKey || anthropicKey;
+      const apiKey = geminiKey || openAiKey || anthropicKey;
       if (!apiKey) {
         trackEvent('analyze_blocked_no_key');
         setError('Please set an API key in Settings before analyzing.');
@@ -80,7 +80,7 @@ export default function MeetingDetailPage() {
         setLoading(false);
         return;
       }
-      const model = openAiKey ? 'openai' : 'anthropic';
+      const model = geminiKey ? 'gemini' : openAiKey ? 'openai' : 'anthropic';
       if (!canUseFeature(plan, 'allAiModels') && model !== 'openai') {
         trackEvent('analyze_blocked_model');
         setModelGated(true);

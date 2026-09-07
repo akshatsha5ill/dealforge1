@@ -22,6 +22,33 @@ export const getSocketReadyPromise = () => socketReadyPromise;
 // Alias for convenience.
 export const waitForSocket = () => socketReadyPromise;
 
+// Last meeting room requested via joinMeeting(). Re-emitted on (re)connect
+// since server-side rooms are lost on reconnect.
+let lastJoinedMeetingId: string | null = null;
+export const getLastJoinedMeetingId = () => lastJoinedMeetingId;
+
+/**
+ * Extract a meeting id from a Zoom meeting context object.
+ * Zoom Apps SDK uses `meetingID` (capital D); be tolerant of variants.
+ */
+export const getMeetingIdFromZoomContext = (ctx: unknown): string | null => {
+  if (!ctx || typeof ctx !== 'object') return null;
+  const c = ctx as Record<string, unknown>;
+  const candidates: unknown[] = [
+    c.meetingId,
+    c.meetingID,
+    c.meetingUUID,
+    c.meetingUuid,
+    c.meeting_uuid,
+    c.id,
+  ];
+  for (const v of candidates) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number' && Number.isFinite(v) && v !== 0) return String(v);
+  }
+  return null;
+};
+
 export const disconnectSocket = () => {
   if (sharedSocket) {
     sharedSocket.disconnect();
@@ -82,6 +109,12 @@ export const useWebSocket = () => {
         });
         sharedSocket.io.on('reconnect_attempt', () => {
           void refreshAuthToken();
+        });
+        // (Re)join the last requested meeting room on every (re)connect.
+        sharedSocket.on('connect', () => {
+          if (lastJoinedMeetingId) {
+            sharedSocket?.emit('join_meeting', lastJoinedMeetingId);
+          }
         });
         resolveReady(sharedSocket);
       } else {
@@ -151,10 +184,21 @@ export const useWebSocket = () => {
     setReadySocket(null);
   }, []);
 
+  const joinMeeting = useCallback(
+    (meetingId: string | null | undefined) => {
+      if (!meetingId || typeof meetingId !== 'string' || !meetingId.trim()) return;
+      const id = meetingId.trim();
+      lastJoinedMeetingId = id;
+      emit('join_meeting', id);
+    },
+    [emit],
+  );
+
   return {
     emit,
     subscribe,
     disconnect,
+    joinMeeting,
     socket: readySocket ?? socketRef.current,
     ready: socketReadyPromise,
     socketReady: socketReadyPromise,

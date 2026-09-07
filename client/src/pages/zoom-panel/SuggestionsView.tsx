@@ -1,5 +1,6 @@
 import { useEffect, useState, memo } from 'react';
-import { useWebSocket } from '../../hooks/useWebSocket';
+import { useOutletContext } from 'react-router-dom';
+import { useWebSocket, getMeetingIdFromZoomContext } from '../../hooks/useWebSocket';
 
 interface Suggestion {
   title: string;
@@ -16,7 +17,13 @@ SuggestionItem.displayName = 'SuggestionItem';
 
 const SuggestionsView = () => {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const { subscribe } = useWebSocket();
+  const { subscribe, joinMeeting } = useWebSocket();
+  const outletContext = useOutletContext<{ zoomContext?: Record<string, string | number | boolean> | null } | null>();
+  const meetingId = getMeetingIdFromZoomContext(outletContext?.zoomContext ?? null);
+
+  useEffect(() => {
+    if (meetingId) joinMeeting(meetingId);
+  }, [meetingId, joinMeeting]);
 
   useEffect(() => {
     const unsubscribe = subscribe('ai_suggestion', (suggestion: Suggestion) => {

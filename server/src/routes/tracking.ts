@@ -341,6 +341,21 @@ const pullEvents = async (userId: string): Promise<any[]> => {
   return events;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const peekEvents = async (userId: string): Promise<any[]> => {
+  if (useRedis && redis) {
+    try {
+      const key = `tracking:${userId}`;
+      const events = await redis.lrange(key, 0, -1);
+      return events.map((e: string) => JSON.parse(e));
+    } catch {
+      // Fall through to in-memory
+    }
+  }
+  const events = trackingInbox.get(userId) || [];
+  return [...events];
+};
+
 router.get('/events', verifyAuth, async (req: AuthRequest, res) => {
   const userId = req.user!.uid;
   const events = await pullEvents(userId);
@@ -350,7 +365,7 @@ router.get('/events', verifyAuth, async (req: AuthRequest, res) => {
 router.get('/events/:campaignId', verifyAuth, async (req: AuthRequest, res) => {
   const userId = req.user!.uid;
   const { campaignId } = req.params;
-  const allEvents = await pullEvents(userId);
+  const allEvents = await peekEvents(userId);
   const events = allEvents.filter((e) => e.campaignId === campaignId);
   res.status(200).json({ status: 'success', events });
 });

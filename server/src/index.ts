@@ -161,10 +161,27 @@ io.on('connection', (socket: Socket & { user?: Record<string, unknown> }) => {
       userHits.push(now);
       saveNoteUserTimestamps.set(rateUid, userHits);
     }
-    const meetingRoom = [...socket.rooms].find(r => r.startsWith('meeting:'));
-    if (!meetingRoom) {
+    const meetingRooms = [...socket.rooms].filter((r) => r.startsWith('meeting:'));
+    if (meetingRooms.length === 0) {
       log.warn('Note received but socket not in a meeting room', { socketId: socket.id });
       return;
+    }
+    // Multi-room guard: reject ambiguous writes; require explicit meetingId in payload to disambiguate.
+    let meetingRoom: string;
+    if (meetingRooms.length > 1) {
+      const explicitId = (note as Record<string, unknown> | null | undefined)?.meetingId;
+      if (typeof explicitId !== 'string' || !explicitId || !meetingRooms.includes(`meeting:${explicitId}`)) {
+        deny('ambiguous meeting room: provide explicit meetingId in payload');
+        return;
+      }
+      meetingRoom = `meeting:${explicitId}`;
+    } else {
+      meetingRoom = meetingRooms[0] as string;
+      const explicitId = (note as Record<string, unknown> | null | undefined)?.meetingId;
+      if (explicitId !== undefined && explicitId !== meetingRoom.replace('meeting:', '')) {
+        deny('meetingId mismatch');
+        return;
+      }
     }
     // Validation: must be a plain object.
     if (!note || typeof note !== 'object' || Array.isArray(note)) {
@@ -208,6 +225,26 @@ io.on('connection', (socket: Socket & { user?: Record<string, unknown> }) => {
       return;
     }
     const meetingId = meetingRoom.replace('meeting:', '');
+    // Stale-room guard: re-check buffer owner == uid before store (join-time check alone is insufficient).
+    const ownerUid = socket.user?.uid as string | undefined;
+    try {
+      const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
+      const owner =
+        meta && typeof meta === 'object'
+          ? ((meta as Record<string, unknown>).ownerUid ??
+            (meta as Record<string, unknown>).uid ??
+            (meta as Record<string, unknown>).userId ??
+            (meta as Record<string, unknown>).owner)
+          : null;
+      if (typeof owner !== 'string' || owner !== ownerUid) {
+        deny('not meeting owner');
+        return;
+      }
+    } catch (err) {
+      log.warn('Socket save_note ownership check failed', { socketId: socket.id, meetingId, error: (err as Error)?.message });
+      deny('ownership check failed');
+      return;
+    }
     const key = `notes:${meetingId}`;
     const existing = (await bufferService.get<{ notes: Array<Record<string, unknown>> }>(key)) || { notes: [] };
     existing.notes.push(sanitizedNote);

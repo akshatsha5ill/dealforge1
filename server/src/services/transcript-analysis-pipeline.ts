@@ -19,6 +19,16 @@ interface Suggestion {
   content: string;
 }
 
+interface Lead {
+  name?: string;
+  company?: string;
+  role?: string;
+  email?: string | null;
+  score?: number;
+  stage?: string;
+  [key: string]: unknown;
+}
+
 interface MeetingPipeline {
   meetingId: string;
   ownerUid?: string;
@@ -108,8 +118,12 @@ class TranscriptAnalysisPipeline {
         return;
       }
 
-      // Quota check before expensive AI call.
-      const quotaUid = pipeline.ownerUid ?? await this.resolveOwnerUid(meetingId) ?? meetingId;
+      // Fail-closed: never fall back to meetingId (would grant per-meeting quota bypass).
+      const quotaUid = pipeline.ownerUid ?? await this.resolveOwnerUid(meetingId);
+      if (!quotaUid) {
+        log.warn('Owner unresolved, skipping AI analysis (fail-closed)', { meetingId });
+        return;
+      }
       const [dailyCount, monthlyCount] = await Promise.all([
         getDailyAnalysisCount(quotaUid),
         getMonthlyAnalysisCount(quotaUid),
@@ -125,17 +139,29 @@ class TranscriptAnalysisPipeline {
 
       const analysisResult = await this.performAnalysis(deltaTranscript, apiKey);
       
-      if (analysisResult && analysisResult.suggestions) {
-        await this.emitSuggestions(meetingId, analysisResult.suggestions);
-      }
+      if (analysisResult) {
+        if (analysisResult.suggestions) {
+          await this.emitSuggestions(meetingId, analysisResult.suggestions);
+        }
+        if (analysisResult.leads && analysisResult.leads.length > 0) {
+          await this.persistLeads(meetingId, analysisResult.leads);
+        }
 
-      pipeline.lastAnalyzedIndex = transcriptData.segments.length;
-      log.info('Transcript analysis completed', { 
-        meetingId, 
-        segmentsAnalyzed: newSegments.length,
-        totalSegments: transcriptData.segments.length,
-        suggestionsGenerated: analysisResult?.suggestions?.length || 0
-      });
+        pipeline.lastAnalyzedIndex = transcriptData.segments.length;
+        log.info('Transcript analysis completed', { 
+          meetingId, 
+          segmentsAnalyzed: newSegments.length,
+          totalSegments: transcriptData.segments.length,
+          suggestionsGenerated: analysisResult?.suggestions?.length || 0,
+          leadsGenerated: analysisResult?.leads?.length || 0
+        });
+      } else {
+        log.warn('Transcript analysis failed, cursor not advanced - will retry on next interval', {
+          meetingId,
+          pendingSegments: newSegments.length,
+          lastAnalyzedIndex: pipeline.lastAnalyzedIndex
+        });
+      }
 
     } catch (error) {
       log.error('Error analyzing transcript', { meetingId, error: error instanceof Error ? error.message : error });
@@ -188,7 +214,7 @@ class TranscriptAnalysisPipeline {
     return 'openai';
   }
 
-  private async performAnalysis(transcript: string, apiKey: string): Promise<{ suggestions: Suggestion[] } | null> {
+  private async performAnalysis(transcript: string, apiKey: string): Promise<{ suggestions: Suggestion[]; leads: Lead[] } | null> {
     try {
       const model = this.getAIModel();
       const result = await analyzeMeeting(transcript, model, apiKey);
@@ -203,7 +229,7 @@ class TranscriptAnalysisPipeline {
     }
   }
 
-  private extractSuggestions(analysisResult: Record<string, unknown>): { suggestions: Suggestion[] } {
+  private extractSuggestions(analysisResult: Record<string, unknown>): { suggestions: Suggestion[]; leads: Lead[] } {
     const suggestions: Suggestion[] = [];
     
     if (analysisResult.actionItems && Array.isArray(analysisResult.actionItems)) {
@@ -259,7 +285,14 @@ class TranscriptAnalysisPipeline {
       }
     }
 
-    return { suggestions };
+    let leads: Lead[] = [];
+    if (analysisResult.leads && Array.isArray(analysisResult.leads)) {
+      leads = (analysisResult.leads as unknown[]).filter(
+        (entry): entry is Lead => typeof entry === 'object' && entry !== null
+      );
+    }
+
+    return { suggestions, leads };
   }
 
   private async emitSuggestions(meetingId: string, suggestions: Suggestion[]): Promise<void> {
@@ -275,6 +308,26 @@ class TranscriptAnalysisPipeline {
       meetingId, 
       suggestionCount: suggestions.length 
     });
+  }
+
+  private async persistLeads(meetingId: string, leads: Lead[]): Promise<void> {
+    if (!leads || leads.length === 0) {
+      return;
+    }
+    try {
+      const key = `leads:${meetingId}`;
+      const existing = (await bufferService.get<{ leads: Lead[] }>(key)) || { leads: [] };
+      existing.leads.push(...leads);
+      await bufferService.store(key, existing);
+      if (this.io) {
+        for (const lead of leads) {
+          this.io.to(`meeting:${meetingId}`).emit('lead_detected', lead);
+        }
+      }
+      log.info('Leads persisted and emitted', { meetingId, leadCount: leads.length });
+    } catch (error) {
+      log.error('Failed to persist leads', { meetingId, error: error instanceof Error ? error.message : error });
+    }
   }
 
   shutdown(): void {

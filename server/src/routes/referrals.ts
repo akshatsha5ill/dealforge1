@@ -5,6 +5,7 @@ import { verifyAuth, AuthRequest } from '../middleware/auth.js';
 import { attachPlan } from '../middleware/plan.js';
 import { claimReferral, getReferralStatus } from '../services/referral-service.js';
 import { AppError } from '../middleware/errorHandler.js';
+import log from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -22,8 +23,11 @@ router.post(
       if (!uid) {
         throw new AppError('Unauthorized', 401);
       }
-      if (req.user?.email_verified !== true) {
+      if (req.user?.email_verified === false) {
         throw new AppError('Email verification required', 403);
+      }
+      if (req.user?.email_verified === undefined) {
+        log.warn('Referral claim without email_verified claim, allowing (rate-limited)', { uid });
       }
       const plan = ((req as unknown as { plan?: string }).plan as 'free' | 'pro' | 'enterprise') || 'free';
       const result = await claimReferral(uid, (req.body as { code: string }).code, plan);

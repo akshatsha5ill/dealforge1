@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { useWebSocket, getSharedSocket } from '../../hooks/useWebSocket';
+import { useEffect, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
+import { useWebSocket, getSharedSocket, getMeetingIdFromZoomContext } from '../../hooks/useWebSocket';
 
 const DB_NAME = 'dealforge-notes';
 const STORE_NAME = 'pending_notes';
@@ -136,7 +137,13 @@ const NotesView = () => {
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   // Keep hook mounted so the shared socket is initialized; emits go via getSharedSocket() with ack checks.
-  useWebSocket();
+  const { joinMeeting } = useWebSocket();
+  const outletContext = useOutletContext<{ zoomContext?: Record<string, string | number | boolean> | null } | null>();
+  const meetingId = getMeetingIdFromZoomContext(outletContext?.zoomContext ?? null);
+
+  useEffect(() => {
+    if (meetingId) joinMeeting(meetingId);
+  }, [meetingId, joinMeeting]);
 
   const handleSave = async () => {
     if (!note.trim() || saving) return;

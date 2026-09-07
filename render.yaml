@@ -44,7 +44,7 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
-        value: DealForge <noreply@dealforge.app>
+        value: DealForge <support@dealforge.app>
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

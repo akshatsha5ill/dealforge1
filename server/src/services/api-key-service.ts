@@ -130,10 +130,21 @@ export async function findApiKeyOwner(key: string): Promise<{ uid: string; keyHa
     const status = sub?.status as string | undefined;
     if (status === 'cancelled' || status === 'past_due' || status === 'expired') return null;
     const currentPeriodEnd = sub?.currentPeriodEnd as string | null | undefined;
-    if (currentPeriodEnd) {
+    if (typeof currentPeriodEnd === 'string' && currentPeriodEnd) {
       const endTime = new Date(currentPeriodEnd).getTime();
-      if (!Number.isNaN(endTime) && endTime < Date.now()) return null;
+      if (!Number.isNaN(endTime)) {
+        if (endTime < Date.now()) return null;
+        return { uid, keyHash };
+      }
+      // Invalid date string falls through to fail-closed handling below.
     }
+    // Fail-closed: null/missing/invalid expiry must not grant perpetual access.
+    // Allow a 30d grace from updatedAt so transient webhook nulls don't lock out
+    // immediately; otherwise treat as expired. Covers null + no subscriptionId.
+    const updatedAt = sub?.updatedAt as string | null | undefined;
+    const updatedTime = typeof updatedAt === 'string' && updatedAt ? new Date(updatedAt).getTime() : NaN;
+    const GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+    if (Number.isNaN(updatedTime) || Date.now() - updatedTime > GRACE_MS) return null;
   } catch (err) {
     log.error('Failed to check subscription for API key', { error: err, uid });
     return null;

@@ -12,17 +12,8 @@ export interface SubscriptionSlice {
   fetchSubscription: () => Promise<UserSubscription | null>;
 }
 
-const readCache = (): UserSubscription | null => {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    return raw ? (JSON.parse(raw) as UserSubscription) : null;
-  } catch {
-    return null;
-  }
-};
-
 export const createSubscriptionSlice: StateCreator<StoreState, [], [], SubscriptionSlice> = (set) => ({
-  subscription: readCache(),
+  subscription: null,
   subscriptionLoading: false,
   setSubscription: (subscription) => {
     try {
@@ -55,7 +46,12 @@ export const createSubscriptionSlice: StateCreator<StoreState, [], [], Subscript
       set({ subscription, subscriptionLoading: false });
       return subscription;
     } catch {
-      set({ subscriptionLoading: false });
+      try {
+        localStorage.removeItem(CACHE_KEY);
+      } catch {
+        // ignore storage failures
+      }
+      set({ subscription: null, subscriptionLoading: false });
       return null;
     }
   },

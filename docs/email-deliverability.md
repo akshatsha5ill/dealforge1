@@ -1,7 +1,7 @@
 # Email Deliverability (Resend — SPF / DKIM / DMARC)
 
 Repo state verified:
-- `EMAIL_FROM` default is `DealForge <noreply@dealforge.app>` (`server/src/config.ts:29`, `server/.env.example:28`).
+- `EMAIL_FROM` default is `DealForge <support@dealforge.app>` (`server/src/config.ts:29`, `server/.env.example:32`).
 - `render.yaml` sets `RESEND_API_KEY` (secret) and `healthCheckPath: /api/health`, but defines **no** `EMAIL_FROM` / tracking env vars.
 - No existing SPF/DKIM/DMARC guide (`docs/` only contains `blog/`, `upsell/`, `zoom-marketplace/`).
 

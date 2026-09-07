@@ -263,32 +263,16 @@ export default function EmailPage() {
         await db.drip_campaigns.put(campaign);
       } else {
         if (!form.body) return;
-        const token = await auth.currentUser?.getIdToken();
         const campaignId = crypto.randomUUID();
-        const res = await fetch('/api/email/send', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
-          body: JSON.stringify({
-            to: lead?.email,
-            subject: form.subject,
-            body: form.body,
-            leadId: form.leadId,
-            campaignId,
-            emailApiKey: useStore.getState().resendKey,
-            via,
-          }),
+        await apiClient.post('/email/send', {
+          to: lead?.email,
+          subject: form.subject,
+          body: form.body,
+          leadId: form.leadId,
+          campaignId,
+          emailApiKey: useStore.getState().resendKey,
+          via,
         });
-
-        if (!res.ok) {
-          let errText = '';
-          try { errText = await res.text(); } catch {}
-          console.error('Send failed:', res.status, errText);
-          toast.error('Failed to send email. Draft kept open.');
-          return;
-        }
 
         const campaign = {
           id: campaignId,
@@ -336,7 +320,11 @@ export default function EmailPage() {
   const handleToggleDripStatus = async (id: string, currentStatus: string) => {
     try {
       const newStatus = currentStatus === 'active' ? 'paused' : 'active';
-      await db.drip_campaigns.update(id, { status: newStatus });
+      if (newStatus === 'active') {
+        await db.drip_campaigns.update(id, { status: newStatus, nextRunAt: Date.now(), error: '' });
+      } else {
+        await db.drip_campaigns.update(id, { status: newStatus });
+      }
       loadData();
     } catch (err) {
       console.error('Failed to toggle drip status:', err);
@@ -359,34 +347,18 @@ export default function EmailPage() {
     const lead = leads.find(l => l.id === campaign.leadId);
     if (!lead) return;
     try {
-      const token = await auth.currentUser?.getIdToken();
       // Tracking (open pixel + click wrap) is injected server-side in
       // routes/email.ts using canonical TRACKING_BASE_URL + signed uid.
       // Do not inject here to avoid double pixel, wrong host, raw uid leak.
-      const res = await fetch('/api/email/send', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          to: lead.email,
-          subject: campaign.subject,
-          body: campaign.body,
-          leadId: campaign.leadId,
-          campaignId: campaign.id,
-          emailApiKey: useStore.getState().resendKey,
-          via,
-        }),
+      await apiClient.post('/email/send', {
+        to: lead.email,
+        subject: campaign.subject,
+        body: campaign.body,
+        leadId: campaign.leadId,
+        campaignId: campaign.id,
+        emailApiKey: useStore.getState().resendKey,
+        via,
       });
-
-      if (!res.ok) {
-        let errText = '';
-        try { errText = await res.text(); } catch {}
-        console.error('Send draft failed:', res.status, errText);
-        toast.error('Failed to send draft. Draft kept open.');
-        return;
-      }
 
       await db.email_campaigns.put({
         ...campaign,

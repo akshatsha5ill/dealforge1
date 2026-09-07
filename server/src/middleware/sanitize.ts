@@ -2,7 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import { sanitizeObject } from '../utils/sanitize.js';
 
 const sanitize = (req: Request, res: Response, next: NextFunction) => {
-  if (req.body && typeof req.body === 'object') {
+  // Skip body sanitize for email send: body is HTML and routes/email.ts
+  // click-wraps <a href> + appends <img> pixel (global strip leaves nothing to wrap).
+  const url = (req.originalUrl || (req as { url?: string }).url || '').split('?')[0];
+  const isEmailSend =
+    req.method === 'POST' && (url === '/api/email/send' || url.endsWith('/api/email/send'));
+  if (!isEmailSend && req.body && typeof req.body === 'object') {
     req.body = sanitizeObject(req.body);
   }
   if (req.query && typeof req.query === 'object') {

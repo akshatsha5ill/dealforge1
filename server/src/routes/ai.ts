@@ -12,8 +12,9 @@ const router = express.Router();
 
 const TRANSCRIPT_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
-function enforceTranscriptHistory(plan: string, meetingStartTime: string): void {
+function enforceTranscriptHistory(plan: string, meetingStartTime?: string): void {
   if (plan !== 'free') return;
+  if (!meetingStartTime) return;
   const startTime = new Date(meetingStartTime).getTime();
   if (Number.isNaN(startTime)) {
     throw new AppError('Invalid meetingStartTime.', 400);
@@ -30,7 +31,7 @@ interface AuthenticatedRequest extends Request {
 const analyzeSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   meetingId: z.string().min(1),
-  meetingStartTime: z.string().min(1, "Missing meeting start time"),
+  meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string().min(1, "Missing API key")
 });
@@ -49,7 +50,12 @@ router.post(
       delete req.body.apiKey;
 
       const plan = (req as unknown as { plan?: string }).plan || 'free';
-      enforceTranscriptHistory(plan, meetingStartTime);
+      if (plan === 'free' && !meetingStartTime) {
+        throw new AppError('Missing meeting start time', 400);
+      }
+      if (meetingStartTime) {
+        enforceTranscriptHistory(plan, meetingStartTime);
+      }
       
       const effectiveModel = model || 'openai';
       const uid = req.user?.uid;
@@ -80,7 +86,7 @@ const scoreSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   leadContext: z.record(z.any()),
   meetingId: z.string().min(1).optional(),
-  meetingStartTime: z.string().min(1, "Missing meeting start time"),
+  meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   apiKey: z.string().min(1, "Missing API key")
 });
@@ -99,7 +105,12 @@ router.post(
       delete req.body.apiKey;
 
       const plan = (req as unknown as { plan?: string }).plan || 'free';
-      enforceTranscriptHistory(plan, meetingStartTime);
+      if (plan === 'free' && !meetingStartTime) {
+        throw new AppError('Missing meeting start time', 400);
+      }
+      if (meetingStartTime) {
+        enforceTranscriptHistory(plan, meetingStartTime);
+      }
 
       const effectiveModel = model || 'openai';
       const uid = req.user?.uid;

@@ -1,19 +1,18 @@
 import crypto from 'crypto';
-import { config } from '../config.js';
 
 const ALGORITHM = 'aes-256-gcm';
 
-function getKey(): Buffer {
-  const secret = process.env.ENCRYPTION_KEY || config.zoom.webhookSecretToken;
+function getKey(purpose: string): Buffer {
+  const secret = process.env.ENCRYPTION_KEY;
   if (!secret) {
-    throw new Error('FATAL: ENCRYPTION_KEY or zoom.webhookSecretToken is not set.');
+    throw new Error('FATAL: ENCRYPTION_KEY is not set.');
   }
-  return crypto.createHash('sha256').update(secret).digest();
+  return crypto.createHash('sha256').update(secret + ':' + purpose).digest();
 }
 
-export function encrypt(text: string): string {
+export function encrypt(text: string, purpose = 'data'): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv(ALGORITHM, getKey(), iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, getKey(purpose), iv);
   
   let encrypted = cipher.update(text, 'utf8', 'hex');
   encrypted += cipher.final('hex');
@@ -23,7 +22,7 @@ export function encrypt(text: string): string {
   return `${iv.toString('hex')}:${authTag}:${encrypted}`;
 }
 
-export function decrypt(encryptedData: string): string {
+export function decrypt(encryptedData: string, purpose = 'data'): string {
   const parts = encryptedData.split(':');
   if (parts.length !== 3) throw new Error('Invalid encrypted data format');
   
@@ -31,7 +30,7 @@ export function decrypt(encryptedData: string): string {
   const authTag = Buffer.from(parts[1], 'hex');
   const encryptedText = Buffer.from(parts[2], 'hex');
   
-  const decipher = crypto.createDecipheriv(ALGORITHM, getKey(), iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, getKey(purpose), iv);
   decipher.setAuthTag(authTag);
   
   let decrypted = decipher.update(encryptedText, undefined, 'utf8');

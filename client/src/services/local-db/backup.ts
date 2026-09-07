@@ -4,7 +4,7 @@ import { leadsDB } from './leads';
 import { dealsDB } from './deals';
 import { emailsDB } from './emails';
 import { trackingDB } from './tracking';
-import { Meeting, Transcript, Analysis, Lead, Deal, EmailCampaign, EmailTracking } from '../../types';
+import { Meeting, Transcript, Analysis, Lead, Deal, EmailCampaign, EmailTracking, DripCampaign, Setting } from '../../types';
 
 export interface BackupData {
   meetings?: Meeting[];
@@ -14,11 +14,13 @@ export interface BackupData {
   deals?: Deal[];
   emails?: EmailCampaign[];
   tracking?: EmailTracking[];
+  dripCampaigns?: DripCampaign[];
+  settings?: Setting[];
   exportedAt?: string;
 }
 
 export const exportAllData = async (): Promise<BackupData> => {
-  const [meetings, transcripts, aiAnalysis, leads, deals, emails, tracking] = await Promise.all([
+  const [meetings, transcripts, aiAnalysis, leads, deals, emails, tracking, dripCampaigns, settings] = await Promise.all([
     meetingsDB.getAll(),
     db.transcripts.toArray(),
     db.ai_analysis.toArray(),
@@ -26,8 +28,10 @@ export const exportAllData = async (): Promise<BackupData> => {
     dealsDB.getAll(),
     emailsDB.getAll(),
     trackingDB.getAll(),
+    db.drip_campaigns.toArray(),
+    db.settings.toArray(),
   ]);
-  return { meetings, transcripts, aiAnalysis, leads, deals, emails, tracking, exportedAt: new Date().toISOString() };
+  return { meetings, transcripts, aiAnalysis, leads, deals, emails, tracking, dripCampaigns, settings, exportedAt: new Date().toISOString() };
 };
 
 export const importData = async (data: BackupData): Promise<void> => {
@@ -38,6 +42,8 @@ export const importData = async (data: BackupData): Promise<void> => {
   if (data.deals) await db.deals.bulkPut(data.deals);
   if (data.emails) await db.email_campaigns.bulkPut(data.emails);
   if (data.tracking) await db.email_tracking.bulkPut(data.tracking);
+  if (data.dripCampaigns) await db.drip_campaigns.bulkPut(data.dripCampaigns);
+  if (data.settings) await db.settings.bulkPut(data.settings);
 };
 
 export const downloadJSON = (data: BackupData, filename = `dealforge-backup-${new Date().toISOString().split('T')[0]}.json`): void => {
