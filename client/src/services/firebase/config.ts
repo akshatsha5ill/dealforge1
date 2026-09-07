@@ -1,5 +1,5 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { getAuth, type Auth } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -10,8 +10,8 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-let app: any;
-let auth: any;
+let app: FirebaseApp | undefined;
+let auth: Auth;
 
 try {
   if (!firebaseConfig.apiKey) {
@@ -20,15 +20,17 @@ try {
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
 } catch (error) {
-  console.warn('Running without Firebase:', error);
-  // Provide a dummy auth object to prevent the app from crashing entirely
+  console.warn('Running without Firebase (redirects to /login when auth is required):', error);
+  // Dummy auth keeps the app shell alive without configuration.
+  // Callers must handle the thrown "Firebase not configured" errors by
+  // redirecting to /login with a configuration banner.
   auth = {
-    onAuthStateChanged: (cb: any) => { cb(null); return () => {}; },
+    onAuthStateChanged: (cb: (user: null) => void) => { cb(null); return () => {}; },
     currentUser: null,
     signInWithEmailAndPassword: async () => { throw new Error('Firebase not configured'); },
     createUserWithEmailAndPassword: async () => { throw new Error('Firebase not configured'); },
     signOut: async () => {}
-  };
+  } as unknown as Auth;
 }
 
 export { auth };

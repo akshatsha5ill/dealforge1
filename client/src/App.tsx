@@ -10,13 +10,21 @@ import { initAnalytics } from './services/analytics';
 import { initReferrals, retryPendingReferral } from './services/referral';
 import { useStore } from './store';
 import CookieConsent from './components/common/CookieConsent';
+import BackupPrompt from './components/common/BackupPrompt';
 import ToastContainer, { toast } from './components/common/Toast';
 import ConfirmDialogContainer from './components/common/ConfirmDialog';
 import './index.css';
 
+type BackupHandle = {
+  queryPermission: (opts: { mode: string }) => Promise<string>;
+  requestPermission: (opts: { mode: string }) => Promise<string>;
+  getFileHandle: (name: string, opts: { create: boolean }) => Promise<{
+    createWritable: () => Promise<{ write: (data: string) => Promise<void>; close: () => Promise<void> }>;
+  }>;
+};
+
 function App() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [needsBackupPermission, setNeedsBackupPermission] = useState<any>(null);
+  const [needsBackupPermission, setNeedsBackupPermission] = useState<BackupHandle | null>(null);
   useEffect(() => {
     initAuthListener();
     initAnalytics();
@@ -30,6 +38,8 @@ function App() {
       } else if (benefit?.benefit === 'free_month') {
         toast.success('Referral applied! You have 1 month of Pro credit.');
       }
+    }).catch(() => {
+      // Offline or referral service unavailable — non-critical at startup.
     });
 
     const unsubscribeAuth = useStore.subscribe((state, prevState) => {
@@ -48,16 +58,16 @@ function App() {
         
         if (!lastBackup || Date.now() - (lastBackup.value as number) > SEVEN_DAYS) {
           // Check if we already have permission without prompting
-          const opts = { mode: 'readwrite' };
-          // @ts-ignore
-          if ((await handle.value.queryPermission(opts)) === 'granted') {
-            await runAutoBackup(handle.value);
+          const dirHandle = handle.value as BackupHandle;
+          const opts = { mode: 'readwrite' } as const;
+          if ((await dirHandle.queryPermission(opts)) === 'granted') {
+            await runAutoBackup(dirHandle);
           } else {
-            setNeedsBackupPermission(handle.value);
+            setNeedsBackupPermission(dirHandle);
           }
         }
-      } catch (err) {
-        console.error('Failed to check auto-backup', err);
+      } catch {
+        // Auto-backup check is best-effort; failures stay silent at startup.
       }
     };
     checkBackup();
@@ -94,12 +104,7 @@ function App() {
       <ConfirmDialogContainer />
       <CookieConsent />
       {needsBackupPermission && (
-        <div className="ds-panel" style={{ position: 'fixed', bottom: '32px', right: '32px', padding: '24px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '300px', boxShadow: '0 8px 32px rgba(168, 119, 20, 0.2)', border: '1px solid var(--secondary)' }}>
-          <div className="ds-panel-head" style={{ marginBottom: 0, paddingBottom: 0, borderBottom: 'none' }}>
-            <span className="ds-panel-title">Time for your weekly local backup.</span>
-          </div>
-          <button onClick={handleAllowBackup} className="ds-btn-primary" style={{ padding: '10px 16px', fontSize: '14px', width: '100%', justifyContent: 'center' }}>Authorize Backup</button>
-        </div>
+        <BackupPrompt onAuthorize={handleAllowBackup} />
       )}
     </>
   );

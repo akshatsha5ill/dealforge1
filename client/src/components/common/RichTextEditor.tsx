@@ -21,7 +21,9 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({ value, onChange,
 
   const handleInput = () => {
     if (editorRef.current) {
-      onChange(editorRef.current.innerHTML);
+      // Sanitize on emit as well as on render: innerHTML is attacker-influenced
+      // via paste/contentEditable, and consumers store/render this value.
+      onChange(DOMPurify.sanitize(editorRef.current.innerHTML));
     }
   };
 

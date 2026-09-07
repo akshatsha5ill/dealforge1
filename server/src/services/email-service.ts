@@ -2,6 +2,8 @@ import crypto from 'crypto';
 import { Resend } from 'resend';
 import { config } from '../config.js';
 import { AppError } from '../middleware/errorHandler.js';
+import log from '../utils/logger.js';
+import { getTrackingSecret } from '../utils/tracking-secret.js';
 
 // ---------------------------------------------------------------------------
 // Bulk / compliance helpers (Gmail bulk-sender guidelines + CAN-SPAM)
@@ -80,7 +82,7 @@ const getUnsubscribeBase = (baseOverride?: string): string => {
 // normalized email with TRACKING_SECRET || SESSION_SECRET. Empty when no
 // secret (dev/test verify allows unsigned, mirroring tracking.ts).
 const signUnsubscribeEmail = (to: string): string => {
-  const secret = process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
+  const secret = getTrackingSecret();
   if (!secret) return '';
   return crypto.createHmac('sha256', secret).update(to.trim().toLowerCase()).digest('hex');
 };
@@ -287,7 +289,7 @@ const sendDraft = async (to: string, subject: string, body: string, { apiKey = c
   // config.email.from falls back to a hardcoded default, which must not be
   // used for production sends from an unverified domain.
   if (!(process.env.EMAIL_FROM || '').trim()) {
-    console.warn('[email-service] Refusing Resend send: EMAIL_FROM is not set. Set EMAIL_FROM to an address on a Resend-verified domain.');
+    log.warn('Refusing Resend send: EMAIL_FROM is not set. Set EMAIL_FROM to an address on a Resend-verified domain.');
     throw new AppError('EMAIL_FROM is not configured. Set EMAIL_FROM to an address on a Resend-verified domain.', 400);
   }
   const ctx = normalizeBulkContext(to, from, {

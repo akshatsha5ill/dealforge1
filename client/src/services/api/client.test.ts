@@ -14,23 +14,23 @@ const BASE_URL = (import.meta.env.VITE_API_URL || '') + '/api';
 
 describe('apiClient', () => {
   beforeEach(() => {
-    (globalThis as any).fetch = vi.fn();
-    auth.currentUser = null;
+    (globalThis as unknown as { fetch: unknown }).fetch = vi.fn();
+    (auth as unknown as { currentUser: unknown }).currentUser = null;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  const mockFetchSuccess = (data: any) => {
-    (globalThis.fetch as any).mockResolvedValueOnce({
+  const mockFetchSuccess = (data: unknown) => {
+    (globalThis.fetch as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
       ok: true,
       json: async () => data,
     });
   };
 
-  const mockFetchError = (statusText: string, errorData: any) => {
-    (globalThis.fetch as any).mockResolvedValueOnce({
+  const mockFetchError = (statusText: string, errorData: unknown) => {
+    (globalThis.fetch as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
       ok: false,
       statusText,
       json: async () => errorData,
@@ -51,7 +51,7 @@ describe('apiClient', () => {
       mockFetchSuccess({ data: 'success' });
       const mockToken = 'mock-jwt-token';
 
-      auth.currentUser = {
+      (auth as unknown as { currentUser: unknown }).currentUser = {
         getIdToken: vi.fn().mockResolvedValue(mockToken),
       };
 
@@ -63,14 +63,14 @@ describe('apiClient', () => {
           'Authorization': `Bearer ${mockToken}`
         },
       });
-      expect(auth.currentUser.getIdToken).toHaveBeenCalled();
+      expect((auth.currentUser as unknown as { getIdToken: () => Promise<string> }).getIdToken).toHaveBeenCalled();
     });
 
     it('should fallback to default headers if getIdToken fails', async () => {
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       mockFetchSuccess({ data: 'success' });
       const error = new Error('Token error');
-      auth.currentUser = {
+      (auth as unknown as { currentUser: unknown }).currentUser = {
         getIdToken: vi.fn().mockRejectedValue(error),
       };
 
@@ -165,7 +165,7 @@ describe('apiClient', () => {
 
     it('should fallback to statusText if JSON error parsing fails', async () => {
       // Mock fetch to simulate a response where parsing JSON fails
-      (globalThis.fetch as any).mockResolvedValueOnce({
+      (globalThis.fetch as unknown as { mockResolvedValueOnce: (v: unknown) => void }).mockResolvedValueOnce({
         ok: false,
         statusText: 'Internal Server Error',
         json: async () => { throw new Error('Invalid JSON'); },

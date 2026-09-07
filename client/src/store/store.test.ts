@@ -30,6 +30,7 @@ describe('Zustand Store', () => {
   });
 
   it('sets OpenAI key', () => {
+    // Fixture values only — not real credentials.
     useStore.getState().setOpenAiKey('sk-test123');
     expect(useStore.getState().openAiKey).toBe('sk-test123');
   });

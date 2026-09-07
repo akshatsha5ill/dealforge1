@@ -18,6 +18,6 @@ export const createAuthSlice: StateCreator<StoreState, [], [], AuthSlice> = (set
   setUser: (user) => set({ user, isAuthenticated: !!user }),
   setAuthReady: (status) => set({ isAuthReady: status }),
   logout: () => {
-    set({ user: null, isAuthenticated: false, openAiKey: '', anthropicKey: '', geminiKey: '', resendKey: '' });
+    set({ user: null, isAuthenticated: false, openAiKey: '', anthropicKey: '', geminiKey: '', resendKey: '', subscription: null });
   },
 });

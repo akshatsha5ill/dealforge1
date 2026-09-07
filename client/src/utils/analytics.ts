@@ -1,3 +1,5 @@
+// Chart data builders (pure functions). Distinct from services/analytics.ts
+// (Google Analytics) and services/usage-analytics.ts (local event store).
 export const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -17,6 +19,7 @@ export interface DateItem {
   startTime?: string;
   sentAt?: string;
   scheduledAt?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -34,6 +37,7 @@ export function filterByDate<T extends DateItem>(items: T[], days: number): T[] 
 
 export interface MeetingData {
   startTime: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -50,6 +54,7 @@ export function buildMeetingTrendData(meetings: MeetingData[]) {
 export interface DealData {
   stage?: string;
   value?: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -64,6 +69,7 @@ export function buildPipelineData(deals: DealData[]) {
 
 export interface LeadData {
   stage?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 
@@ -78,6 +84,7 @@ export function buildLeadStageData(leads: LeadData[]) {
 
 export interface EmailItem {
   status?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
 

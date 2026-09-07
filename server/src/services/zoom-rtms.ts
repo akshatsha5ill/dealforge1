@@ -34,11 +34,17 @@ interface RTMSConnection {
   topic: string;
   authenticated: boolean;
   lastActivity: number;
+  reconnectAttempts?: number;
 }
+
+type MeetingEmitter = {
+  to: (room: string) => { emit: (event: string, payload: unknown) => void };
+};
 
 class ZoomRTMSService {
   private connections: Map<string, RTMSConnection> = new Map();
   private heartbeatIntervals: Map<string, NodeJS.Timeout> = new Map();
+  private emitter: MeetingEmitter | null = null;
   private static MAX_RECONNECT_ATTEMPTS = 5;
   private static RECONNECT_DELAY_MS = 3000;
   private static HEARTBEAT_INTERVAL_MS = 30000;
@@ -46,6 +52,11 @@ class ZoomRTMSService {
 
   constructor() {
     this.startConnectionCleanup();
+  }
+
+  /** Inject the Socket.IO server (called once from index.ts). Avoids global.__io. */
+  setEmitter(emitter: MeetingEmitter): void {
+    this.emitter = emitter;
   }
 
   private startConnectionCleanup(): void {
@@ -180,7 +191,7 @@ class ZoomRTMSService {
     log.info('RTMS auth request sent', { meetingId });
   }
 
-  private handleMessage(meetingId: string, message: any): void {
+  private handleMessage(meetingId: string, message: { event?: string; payload?: Record<string, unknown> }): void {
     if (!this.connections.has(meetingId)) return;
 
     const conn = this.connections.get(meetingId);
@@ -190,10 +201,10 @@ class ZoomRTMSService {
 
     switch (message.event) {
       case 'transcription':
-        this.handleTranscriptionEvent(meetingId, message);
+        this.handleTranscriptionEvent(meetingId, message as unknown as RTMSTranscriptionEvent);
         break;
       case 'meeting_status':
-        this.handleMeetingStatusEvent(meetingId, message);
+        this.handleMeetingStatusEvent(meetingId, message as { payload?: { status?: string } });
         break;
       case 'participant_update':
         log.info('Participant update received', { meetingId, participant: message.payload?.name });
@@ -239,9 +250,8 @@ class ZoomRTMSService {
       await bufferService.store(key, existing);
 
       // Broadcast to connected clients
-      const io = (global as any).__io;
-      if (io) {
-        io.to(`meeting:${meetingId}`).emit('transcription', segment);
+      if (this.emitter) {
+        this.emitter.to(`meeting:${meetingId}`).emit('transcription', segment);
         log.info('Transcription segment emitted', { meetingId, speaker: segment.speaker });
       }
     } catch (err) {
@@ -249,7 +259,7 @@ class ZoomRTMSService {
     }
   }
 
-  private handleMeetingStatusEvent(meetingId: string, event: any): void {
+  private handleMeetingStatusEvent(meetingId: string, event: { payload?: { status?: string } }): void {
     const { status } = event.payload || {};
     if (status === 'ended') {
       log.info('Meeting ended via RTMS', { meetingId });
@@ -293,7 +303,7 @@ class ZoomRTMSService {
     const conn = this.connections.get(meetingId);
     if (!conn) return;
     
-    const attempt = (conn as any).reconnectAttempts || 0;
+    const attempt = conn.reconnectAttempts || 0;
 
     if (attempt >= ZoomRTMSService.MAX_RECONNECT_ATTEMPTS) {
       log.error('Max reconnect attempts reached for RTMS', { meetingId });
@@ -301,7 +311,7 @@ class ZoomRTMSService {
       return;
     }
 
-    (conn as any).reconnectAttempts = attempt + 1;
+    conn.reconnectAttempts = attempt + 1;
     const topic = conn.topic;
     
     setTimeout(async () => {

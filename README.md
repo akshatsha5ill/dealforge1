@@ -60,8 +60,8 @@ API Access: Pro users can generate read-only API keys in Settings → API Access
 ### Installation
 
 ```bash
-git clone https://github.com/akshatsha5ill/vigilant-goggles.git
-cd vigilant-goggles
+git clone https://github.com/akshatsha5ill/dealforge1.git
+cd dealforge1
 npm install
 ```
 
@@ -133,4 +133,8 @@ Server includes OpenAPI/Swagger documentation at `/api/docs` when running.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately per [SECURITY.md](SECURITY.md).

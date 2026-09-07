@@ -1,3 +1,5 @@
+// Local product-event store (localStorage). Distinct from services/analytics.ts
+// (Google Analytics) and utils/analytics.ts (chart data builders).
 const STORAGE_KEY = 'dealforge_usage_events';
 const MAX_EVENT_AGE_DAYS = 180;
 

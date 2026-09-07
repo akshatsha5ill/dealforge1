@@ -4,7 +4,7 @@ dotenv.config();
 
 export const config = {
   env: process.env.NODE_ENV || 'development',
-  port: process.env.PORT || 3000,
+  port: Number(process.env.PORT || 3000),
   clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
   
   zoom: {
@@ -76,7 +76,7 @@ if (config.isProd) {
   ];
   const missing = required.filter(([, val]) => !val);
   if (missing.length) {
-    console.error(`Missing required environment variables: ${missing.map(([k]) => k).join(', ')}`);
+    process.stderr.write(`Missing required environment variables: ${missing.map(([k]) => k).join(', ')}\n`);
     process.exit(1);
   }
 }

@@ -87,7 +87,7 @@ export const importFromJSONFile = async (file: File): Promise<void> => {
         const data = JSON.parse(e.target?.result as string);
         await importData(data);
         resolve();
-      } catch (err: any) {
+      } catch (err: unknown) {
         reject(err);
       }
     };
@@ -96,18 +96,29 @@ export const importFromJSONFile = async (file: File): Promise<void> => {
   });
 };
 
-export const selectBackupDirectory = async (): Promise<any> => {
+export const selectBackupDirectory = async (): Promise<FileSystemDirectoryHandle> => {
   if (!('showDirectoryPicker' in window)) {
     throw new Error('File System Access API not supported in this browser.');
   }
-  // @ts-ignore
-  const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+  const handle = await (window as unknown as { showDirectoryPicker: (opts: { mode: string }) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({ mode: 'readwrite' });
   await db.settings.put({ key: 'backup_dir_handle', value: handle });
   return handle;
 };
 
-export const verifyPermission = async (fileHandle: any, readWrite: boolean = true) => {
-  const options = { mode: readWrite ? 'readwrite' : 'read' };
+// Minimal File System Access API surface (DOM lib may not include queryPermission).
+interface PermissionHandle {
+  queryPermission: (opts: { mode: string }) => Promise<string>;
+  requestPermission: (opts: { mode: string }) => Promise<string>;
+}
+
+interface BackupDirHandle extends PermissionHandle {
+  getFileHandle: (name: string, opts: { create: boolean }) => Promise<{
+    createWritable: () => Promise<{ write: (data: string) => Promise<void>; close: () => Promise<void> }>;
+  }>;
+}
+
+export const verifyPermission = async (fileHandle: PermissionHandle, readWrite: boolean = true) => {
+  const options = { mode: readWrite ? 'readwrite' : 'read' } as const;
   if ((await fileHandle.queryPermission(options)) === 'granted') {
     return true;
   }
@@ -117,7 +128,7 @@ export const verifyPermission = async (fileHandle: any, readWrite: boolean = tru
   return false;
 };
 
-export const runAutoBackup = async (handle: any): Promise<boolean> => {
+export const runAutoBackup = async (handle: BackupDirHandle): Promise<boolean> => {
   try {
     const hasPermission = await verifyPermission(handle, true);
     if (!hasPermission) return false;
@@ -132,8 +143,8 @@ export const runAutoBackup = async (handle: any): Promise<boolean> => {
     
     await db.settings.put({ key: 'last_auto_backup', value: Date.now() });
     return true;
-  } catch (err) {
-    console.error('Auto backup failed', err);
+  } catch {
+    // Best-effort backup; callers surface failure via return value.
     return false;
   }
 };

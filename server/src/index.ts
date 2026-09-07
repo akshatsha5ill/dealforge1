@@ -16,39 +16,15 @@ import zoomRTMS from './services/zoom-rtms.js';
 import transcriptAnalysisPipeline from './services/transcript-analysis-pipeline.js';
 import log from './utils/logger.js';
 import { config } from './config.js';
+import { isAllowedOrigin } from './utils/origins.js';
 import { getFirebaseAuth } from './services/firebase-admin.js';
 
 const server = http.createServer(app);
 
-const allowedOrigin = config.clientUrl || 'http://localhost:5173';
-const allowedOrigins = new Set(
-  [allowedOrigin, ...(process.env.CLIENT_URLS || '').split(',').map((s) => s.trim()).filter(Boolean)],
-);
-const allowPreviewOrigins =
-  process.env.ALLOW_PREVIEW_ORIGINS !== undefined
-    ? process.env.ALLOW_PREVIEW_ORIGINS === 'true'
-    : !config.isProd;
-
-const isAllowedSocketOrigin = (origin: string | undefined): boolean => {
-  // Allow non-browser / same-origin requests with no Origin header.
-  if (!origin) return true;
-  if (allowedOrigins.has(origin)) return true;
-  if (!allowPreviewOrigins) return false;
-  // See app.ts isAllowedOrigin: explicit CLIENT_URLS allowlist only, plus the
-  // trusted Zoom client. No *.vercel.app wildcard (attacker-deployable).
-  try {
-    const hostname = new URL(origin).hostname;
-    if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
-  } catch {
-    // fall through to deny
-  }
-  return false;
-};
-
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-      if (isAllowedSocketOrigin(origin)) return callback(null, true);
+      if (isAllowedOrigin(origin)) return callback(null, true);
       callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST']
@@ -66,8 +42,8 @@ io.engine.on('connection_error', (err: { req?: unknown; code?: unknown; message?
 
 app.set('io', io);
 
-// Expose io globally for RTMS service
-(global as any).__io = io;
+// Inject Socket.IO emitter into RTMS service (replaces global.__io)
+zoomRTMS.setEmitter(io);
 
 // Initialize transcript analysis pipeline with WebSocket server
 transcriptAnalysisPipeline.initialize(io);

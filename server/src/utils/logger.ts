@@ -2,7 +2,7 @@ type LogLevel = 'info' | 'warn' | 'error';
 
 const levels: Record<LogLevel, string> = { info: 'INFO', warn: 'WARN', error: 'ERROR' };
 
-const log = (level: LogLevel, message: string, extra: Record<string, any> = {}) => {
+const log = (level: LogLevel, message: string, extra: Record<string, unknown> = {}) => {
   const entry = {
     level: levels[level] || level,
     message,
@@ -18,7 +18,7 @@ const log = (level: LogLevel, message: string, extra: Record<string, any> = {}) 
 };
 
 export default {
-  info: (msg: string, extra?: Record<string, any>) => log('info', msg, extra),
-  warn: (msg: string, extra?: Record<string, any>) => log('warn', msg, extra),
-  error: (msg: string, extra?: Record<string, any>) => log('error', msg, extra),
+  info: (msg: string, extra?: Record<string, unknown>) => log('info', msg, extra),
+  warn: (msg: string, extra?: Record<string, unknown>) => log('warn', msg, extra),
+  error: (msg: string, extra?: Record<string, unknown>) => log('error', msg, extra),
 };

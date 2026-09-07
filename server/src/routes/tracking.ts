@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { z } from 'zod';
 import { validateRequest } from 'zod-express-middleware';
 import log from '../utils/logger.js';
+import { getTrackingSecret } from '../utils/tracking-secret.js';
 
 const router = express.Router();
 
@@ -17,8 +18,6 @@ const router = express.Router();
 // registerClickTarget(); on click only redirect when the url hash matches
 // the stored mapping, else fall back to clientUrl. javascript:/data:/
 // vbscript: are always blocked; missing mapping denies to clientUrl.
-const getTrackingSecret = (): string =>
-  process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
 
 const verifyTrackingUid = (token?: string): string | null => {
   if (!token) return null;

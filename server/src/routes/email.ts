@@ -14,6 +14,7 @@ import { config } from '../config.js';
 import { getFirebaseFirestore } from '../services/firebase-admin.js';
 import { FieldValue } from 'firebase-admin/firestore';
 import { registerClickTarget } from './tracking.js';
+import { getTrackingSecret } from '../utils/tracking-secret.js';
 
 // Re-export for any existing imports
 export { validateRequest } from '../middleware/validateRequest.js';
@@ -40,7 +41,7 @@ const getTrackingBaseUrl = (req: Request): string => {
 };
 
 const signTrackingUid = (uid: string): string => {
-  const secret = process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
+  const secret = getTrackingSecret();
   // Fail-closed in prod: never emit a raw Firebase uid in email URLs/logs and
   // never emit forgeable tracking tokens. Mirrors tracking.ts verify (which
   // rejects unsigned uids in prod) and getTrackingBaseUrl above.

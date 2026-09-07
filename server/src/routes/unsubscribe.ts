@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { record } from '../services/suppression-service.js';
 import { config } from '../config.js';
+import { getTrackingSecret } from '../utils/tracking-secret.js';
 
 const router = express.Router();
 
@@ -15,8 +16,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // `email.sig` (tracking sign style). Fail-closed in prod when no secret is
 // configured (mirrors tracking.ts): reject instead of allowing any token to
 // mass-suppress anyone. In non-prod, allow unsigned for dev/test.
-const getTrackingSecret = (): string =>
-  process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
 
 function verifyEmailToken(email: string, token: string): boolean {
   if (!token) return false;

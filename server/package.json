@@ -12,8 +12,8 @@
     "test": "vitest run"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Akshat Sharma",
+  "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.5",
     "@google/genai": "^0.2.0",

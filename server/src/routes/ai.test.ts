@@ -1,84 +1,94 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
+import request from 'supertest';
+import { errorHandler } from '../middleware/errorHandler.js';
+
+vi.mock('../services/ai-service.js', () => ({
+  analyzeMeeting: vi.fn().mockResolvedValue({ summary: 'Test summary' }),
+}));
+
+vi.mock('../services/ai-providers.js', () => ({
+  AIFactory: {
+    getProvider: vi.fn().mockReturnValue({
+      scoreLead: vi.fn().mockResolvedValue({ score: 85, reason: 'Good fit' }),
+    }),
+  },
+}));
+
+vi.mock('../services/firebase-admin.js', () => ({
+  getFirebaseFirestore: () => ({
+    collection: () => ({
+      doc: () => ({
+        collection: () => ({
+          doc: () => ({
+            get: vi.fn().mockResolvedValue({ exists: false, data: () => null }),
+          }),
+        }),
+      }),
+    }),
+  }),
+}));
+
+vi.mock('../services/usage-service.js', () => ({
+  confirmAnalysisSlot: vi.fn().mockResolvedValue(undefined),
+  reserveAnalysisSlot: vi.fn().mockResolvedValue('reservation-1'),
+  releaseAnalysisSlot: vi.fn().mockResolvedValue(undefined),
+  AnalysisQuotaError: class AnalysisQuotaError extends Error {},
+  DAILY_ANALYSIS_LIMIT: 100,
+}));
+
+vi.mock('../services/referral-service.js', () => ({
+  getEffectiveAnalysisLimit: vi.fn().mockResolvedValue(3),
+}));
+
 import aiRouter from './ai.js';
 import { analyzeMeeting } from '../services/ai-service.js';
 
-// Mock the AI service
-vi.mock('../services/ai-service.js', () => ({
-  analyzeMeeting: vi.fn()
-}));
-
-// We can mock AIFactory directly
-vi.mock('../services/ai-providers.js', () => {
-  return {
-    AIFactory: {
-      getProvider: vi.fn().mockReturnValue({
-        scoreLead: vi.fn().mockResolvedValue({ score: 85, reason: 'Good fit' })
-      })
-    }
-  };
-});
+const createApp = () => {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as unknown as { user: { uid: string } }).user = { uid: 'test-user-id' };
+    next();
+  });
+  app.use('/ai', aiRouter);
+  app.use(errorHandler);
+  return app;
+};
 
 describe('AI Routes', () => {
-  let app: any;
-
   beforeEach(() => {
     vi.clearAllMocks();
-    
-    // We create a lightweight express app to test the router manually
-    app = express();
-    app.use(express.json());
-    
-    // Mock the verifyAuth middleware behavior by attaching a fake user
-    app.use((req: any, res: any, next: any) => {
-      req.user = { uid: 'test-user-id' };
-      next();
-    });
-    
-    app.use('/ai', aiRouter);
   });
 
-  describe('POST /ai/analyze', () => {
-    it('should reject requests without API keys', async () => {
-      // Manual router testing simulation
-      const req = {
-        body: { transcript: 'hello', meetingId: 'm1', model: 'openai' },
-        user: { uid: 'test' }
-      } as any;
-      const res = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn()
-      } as any;
-      const next = vi.fn();
-      
-      // Since aiRouter is a router, we would typically use supertest
-      // Here we document the core logic requirements for the test suite.
-      if (!req.body.apiKey) {
-        res.status(400).json({ error: 'Missing API key. Please configure your API key in Settings.' });
-      }
-      
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('Missing API key') }));
-    });
+  it('POST /ai/analyze rejects requests without API keys', async () => {
+    const res = await request(createApp())
+      .post('/ai/analyze')
+      .send({ transcript: 'hello world, this is a test', meetingId: 'm1', model: 'openai' });
 
-    it('should call analyzeMeeting and return success', async () => {
-      vi.mocked(analyzeMeeting).mockResolvedValueOnce({ summary: 'Test summary' });
-      
-      const req = {
-        body: { transcript: 'hello', meetingId: 'm1', apiKey: 'test-key' },
-        user: { uid: 'test' }
-      } as any;
-      const res = {
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn()
-      } as any;
-      
-      const analysis = await analyzeMeeting(req.body.transcript, 'openai', req.body.apiKey);
-      res.status(200).json({ status: 'success', analysis });
-      
-      expect(analyzeMeeting).toHaveBeenCalledWith('hello', 'openai', 'test-key');
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({ status: 'success', analysis: { summary: 'Test summary' } });
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Missing API key/i);
+  });
+
+  it('POST /ai/analyze calls analyzeMeeting and returns success', async () => {
+    vi.mocked(analyzeMeeting).mockResolvedValueOnce({ summary: 'Test summary' } as never);
+
+    const res = await request(createApp())
+      .post('/ai/analyze')
+      .set('x-ai-api-key', 'test-key')
+      .send({
+        transcript: 'hello world, this is a sufficiently long transcript',
+        meetingId: 'm1',
+        meetingStartTime: new Date().toISOString(),
+        model: 'openai',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(analyzeMeeting).toHaveBeenCalledWith(
+      expect.stringContaining('hello world'),
+      'openai',
+      'test-key',
+    );
   });
 });

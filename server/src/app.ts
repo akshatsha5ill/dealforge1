@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import * as Sentry from '@sentry/node';
 import authRoutes from './routes/auth.js';
 import zoomRoutes from './routes/zoom.js';
@@ -24,6 +23,20 @@ import sanitize from './middleware/sanitize.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import log from './utils/logger.js';
 import { config } from './config.js';
+import { isAllowedOrigin } from './utils/origins.js';
+import {
+  apiLimiter,
+  authLimiter,
+  trackingLimiter,
+  aiLimiter,
+  emailLimiter,
+  billingLimiter,
+  referralLimiter,
+  apiKeyLimiter,
+  syncLimiter,
+  publicApiLimiter,
+  emailWebhookLimiter,
+} from './middleware/rateLimits.js';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,11 +46,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 if (config.isProd && process.env.SENTRY_DSN) {
-  const scrub = (obj: any): any => {
+  const scrub = (obj: unknown): unknown => {
     if (typeof obj === 'string') return obj.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
     if (!obj || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) return obj.map(scrub);
-    const out: Record<string, any> = { ...obj };
+    const out: Record<string, unknown> = { ...(obj as Record<string, unknown>) };
     for (const k of Object.keys(out)) {
       if (/api[-_]?key|transcript|email/i.test(k)) out[k] = '[Redacted]';
       else out[k] = scrub(out[k]);
@@ -48,8 +61,8 @@ if (config.isProd && process.env.SENTRY_DSN) {
     dsn: process.env.SENTRY_DSN,
     tracesSampleRate: 0.1,
     beforeSend(event) {
-      if (event.request?.data) event.request.data = scrub(event.request.data);
-      if (event.extra) event.extra = scrub(event.extra);
+      if (event.request?.data) event.request.data = scrub(event.request.data) as typeof event.request.data;
+      if (event.extra) event.extra = scrub(event.extra) as typeof event.extra;
       // BYO keys travel in headers — redact them (and auth material) wherever
       // the SDK captured them.
       const headers = (event.request as { headers?: Record<string, unknown> } | undefined)?.headers;
@@ -69,32 +82,6 @@ const app = express();
 // express-rate-limit see the real client IP via X-Forwarded-For.
 app.set('trust proxy', 1);
 
-const allowedOrigin = config.clientUrl || 'http://localhost:5173';
-const allowedOrigins = new Set(
-  [allowedOrigin, ...(process.env.CLIENT_URLS || '').split(',').map((s) => s.trim()).filter(Boolean)],
-);
-const allowPreviewOrigins =
-  process.env.ALLOW_PREVIEW_ORIGINS !== undefined
-    ? process.env.ALLOW_PREVIEW_ORIGINS === 'true'
-    : !config.isProd;
-const isAllowedOrigin = (origin: string | undefined): boolean => {
-  // Allow non-browser / same-origin requests with no Origin header.
-  if (!origin) return true;
-  if (allowedOrigins.has(origin)) return true;
-  if (!allowPreviewOrigins) return false;
-  // Preview origins (dev only unless ALLOW_PREVIEW_ORIGINS=true): allow the
-  // trusted Zoom client only. Preview deployments must be allowlisted
-  // explicitly via CLIENT_URLS — never wildcard *.vercel.app (any attacker
-  // can deploy there and would receive ACAO with Authorization/x-api-key).
-  try {
-    const hostname = new URL(origin).hostname;
-    if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
-  } catch {
-    // fall through to deny
-  }
-  return false;
-};
-
 app.use(helmet({
   contentSecurityPolicy: config.isProd ? {
     directives: {
@@ -102,27 +89,12 @@ app.use(helmet({
       scriptSrc: ["'self'", "https://appssdk.zoom.us"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      connectSrc: ["'self'", "https://*.googleapis.com", "https://*.firebaseio.com", "wss:", "ws:", allowedOrigin],
+      connectSrc: ["'self'", "https://*.googleapis.com", "https://*.firebaseio.com", "wss:", "ws:", config.clientUrl || 'http://localhost:5173'],
       imgSrc: ["'self'", "data:", "https:"]
     }
   } : false
 }));
 app.use(requestId);
-
-// Key authenticated users by Firebase uid so limits are per-user,
-// falling back to normalized IP for unauthenticated requests.
-const uidKeyGenerator = (req: express.Request): string =>
-  (req as unknown as { user?: { uid?: string } }).user?.uid || (req.ip ? ipKeyGenerator(req.ip) : 'unknown');
-
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  skip: (req) => req.originalUrl === '/api/health' || req.path === '/health',
-  message: { error: 'Too many requests, please try again later.' }
-});
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -134,101 +106,12 @@ app.use(cors({
 }));
 app.use(compression());
 
-app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+interface RawBodyRequest extends express.Request {
+  rawBody?: Buffer;
+}
+app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => { (req as RawBodyRequest).rawBody = buf; } }));
 app.use(sanitize);
 app.use('/api', apiLimiter);
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many auth requests, please try again later.' }
-});
-
-const trackingLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many tracking requests' }
-});
-
-const aiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  message: { error: 'AI rate limit exceeded. Please wait before making another request.' }
-});
-
-const emailLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator, // key by uid (fallback ip)
-  // TODO: add daily quota wired to suppression-service
-  message: { error: 'Email rate limit exceeded. Please wait before sending another email.' }
-});
-
-const billingLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  message: { error: 'Too many billing requests, please try again later.' }
-});
-
-const referralLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  message: { error: 'Too many referral requests, please try again later.' }
-});
-
-const apiKeyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  message: { error: 'Too many API key requests, please try again later.' }
-});
-
-const syncLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: uidKeyGenerator,
-  message: { error: 'Sync rate limit exceeded. Please wait before syncing again.' }
-});
-
-const publicApiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Key by client IP only — never by the attacker-controlled x-api-key header.
-  // Keying by header value would mint a fresh 60/min bucket per rotated fake
-  // key, and every guess burns Firestore reads in findApiKeyOwner (key doc +
-  // subscription doc), enabling brute-force + Firestore-read DoS.
-  keyGenerator: (req) => (req.ip ? ipKeyGenerator(req.ip) : 'unknown'),
-  message: { error: 'API rate limit exceeded. Please slow down your requests.' }
-});
-
-const emailWebhookLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many webhook requests' }
-});
 
 const SENSITIVE_QUERY_RE = /([?&])(token|code|state|api[-_]?key|x-[a-z-]*api[-_]?key|secret)(=[^&#]*)/gi;
 
@@ -249,7 +132,7 @@ const requestLogger = (req: express.Request, res: express.Response, next: expres
       url: redactSensitiveQuery(req.originalUrl),
       status: res.statusCode,
       duration: `${duration}ms`,
-      requestId: (req as any).requestId,
+      requestId: (req as unknown as { requestId?: string }).requestId,
     });
   });
   next();

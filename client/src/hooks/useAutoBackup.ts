@@ -22,8 +22,8 @@ export function useAutoBackup() {
         const data = await exportAllData();
         downloadJSON(data, `dealforge-autobackup-${now.toISOString().split('T')[0]}.json`);
         localStorage.setItem('dealforge_last_autobackup', now.toISOString());
-      } catch (err) {
-        console.error('Auto-backup failed:', err);
+      } catch {
+        // Auto-backup is best-effort; failures stay silent.
       }
     };
 

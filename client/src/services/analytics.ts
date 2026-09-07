@@ -1,4 +1,6 @@
 /// <reference types="vite/client" />
+// Google Analytics (third-party pageviews). Distinct from usage-analytics.ts
+// (local product-event store) and utils/analytics.ts (chart data builders).
 import { readConsent } from './cookie-consent';
 
 const GA_MEASUREMENT_ID = import.meta.env.VITE_GA_ID as string | undefined;

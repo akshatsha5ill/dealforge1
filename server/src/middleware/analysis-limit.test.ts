@@ -1,14 +1,38 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+// Tests enforceAnalysisLimit + attachPlan from ./plan.js (renamed from
+// usage-limit.test.ts to reflect the actual unit under test).
 import { enforceAnalysisLimit, attachPlan } from './plan.js';
 import { AppError } from './errorHandler.js';
 
-const getCount = vi.fn();
+const mocks = vi.hoisted(() => {
+  const reserveAnalysisSlot = vi.fn();
+  const releaseAnalysisSlot = vi.fn();
+  class AnalysisQuotaError extends Error {
+    kind: 'monthly' | 'daily';
+    limit: number;
+    constructor(kind: 'monthly' | 'daily', limit: number, message: string) {
+      super(message);
+      this.kind = kind;
+      this.limit = limit;
+    }
+  }
+  return { reserveAnalysisSlot, releaseAnalysisSlot, AnalysisQuotaError };
+});
+
+const { reserveAnalysisSlot, releaseAnalysisSlot, AnalysisQuotaError } = mocks;
 
 vi.mock('../services/usage-service.js', () => ({
-  getMonthlyAnalysisCount: (...args: unknown[]) => getCount(...args),
-  FREE_ANALYSIS_LIMIT: 3,
+  reserveAnalysisSlot: (...args: unknown[]) => mocks.reserveAnalysisSlot(...args),
+  releaseAnalysisSlot: (...args: unknown[]) => mocks.releaseAnalysisSlot(...args),
+  confirmAnalysisSlot: vi.fn().mockResolvedValue(undefined),
+  AnalysisQuotaError: mocks.AnalysisQuotaError,
+  DAILY_ANALYSIS_LIMIT: 10,
+}));
+
+vi.mock('../services/referral-service.js', () => ({
+  getEffectiveAnalysisLimit: vi.fn().mockResolvedValue(3),
 }));
 
 vi.mock('../services/firebase-admin.js', () => ({
@@ -33,8 +57,8 @@ const errorHandler = (err: unknown, _req: express.Request, res: express.Response
 const createApp = () => {
   const app = express();
   app.use(express.json());
-  app.use((req: any, _res, next) => {
-    req.user = { uid: 'user-1' };
+  app.use((req: unknown, _res, next) => {
+    (req as { user: { uid: string } }).user = { uid: 'user-1' };
     next();
   });
   app.use(attachPlan());
@@ -49,26 +73,26 @@ describe('enforceAnalysisLimit', () => {
   });
 
   it('blocks free users who reached the monthly analysis limit', async () => {
-    getCount.mockResolvedValueOnce(3);
+    reserveAnalysisSlot.mockRejectedValueOnce(new AnalysisQuotaError('monthly', 3, 'limit reached'));
     const res = await request(createApp()).post('/analyze');
     expect(res.status).toBe(403);
     expect(res.body.error).toContain('3 analyzed meetings');
   });
 
   it('allows free users below the limit', async () => {
-    getCount.mockResolvedValueOnce(2);
+    reserveAnalysisSlot.mockResolvedValueOnce('reservation-1');
     const res = await request(createApp()).post('/analyze');
     expect(res.status).toBe(200);
   });
 
   it('allows free users with no recorded usage', async () => {
-    getCount.mockResolvedValueOnce(0);
+    reserveAnalysisSlot.mockResolvedValueOnce('reservation-1');
     const res = await request(createApp()).post('/analyze');
     expect(res.status).toBe(200);
   });
 
-  it('fails open when usage count cannot be determined', async () => {
-    getCount.mockRejectedValueOnce(new Error('boom'));
+  it('fails closed when usage check cannot be determined', async () => {
+    reserveAnalysisSlot.mockRejectedValueOnce(new Error('boom'));
     const res = await request(createApp()).post('/analyze');
     expect(res.status).toBe(500);
   });
