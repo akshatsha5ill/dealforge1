@@ -250,6 +250,13 @@ export default function EmailPage() {
       const lead = leads.find(l => l.id === form.leadId);
       
       if (form.type === 'drip_campaign') {
+        // Fail-closed at creation time (worker also gates): never start an
+        // auto-drip without explicit opt-in.
+        const consent = String((lead as unknown as Record<string, unknown>)?.consentStatus || '').trim().toLowerCase();
+        if (consent !== 'opted_in') {
+          toast.error('This lead has not opted in. Check the opt-in box before starting a drip campaign.');
+          return;
+        }
         const campaign = {
           id: crypto.randomUUID(),
           leadId: form.leadId,

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { config } from '../config.js';
-import { encrypt, decrypt } from '../utils/crypto.js';
+import { encrypt, decrypt, CryptoPurpose } from '../utils/crypto.js';
 import { getFirebaseFirestore } from './firebase-admin.js';
 import { AppError } from '../middleware/errorHandler.js';
 import log from '../utils/logger.js';
@@ -83,7 +83,7 @@ export const buildOAuthStartUrl = (provider: EmailProvider, uid: string, redirec
   const nonce = crypto.randomBytes(16).toString('hex');
   const exp = Date.now() + OAUTH_STATE_TTL_MS;
   pendingOAuthStates.set(nonce, exp);
-  const state = encrypt(JSON.stringify({ uid, redirect, nonce, exp }));
+  const state = encrypt(JSON.stringify({ uid, redirect, nonce, exp }), CryptoPurpose.EmailOAuthState);
 
   if (provider === 'gmail') {
     const params = new URLSearchParams({
@@ -111,7 +111,7 @@ export const buildOAuthStartUrl = (provider: EmailProvider, uid: string, redirec
 
 export const parseOAuthState = (state: string): { uid: string; redirect: string } => {
   try {
-    const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
+    const parsed = JSON.parse(decrypt(state, CryptoPurpose.EmailOAuthState)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
     if (!parsed.uid) throw new Error('Missing uid in state');
     // FIX-SEC-S3: require nonce + expiry to block state replay.
     if (!parsed.nonce || typeof parsed.exp !== 'number') throw new Error('Missing nonce/exp in state');
@@ -217,8 +217,8 @@ export const handleOAuthCallback = async (
 
   const stored: StoredIntegration = {
     email,
-    accessTokenEnc: encrypt(accessToken),
-    refreshTokenEnc: encrypt(tokenData.refresh_token || ''),
+    accessTokenEnc: encrypt(accessToken, CryptoPurpose.EmailToken),
+    refreshTokenEnc: encrypt(tokenData.refresh_token || '', CryptoPurpose.EmailToken),
     expiresAt: tokenData.expires_in ? Date.now() + tokenData.expires_in * 1000 : Date.now() + 3600 * 1000,
     connectedAt: new Date().toISOString(),
     scopes: PROVIDER_SCOPES[provider].split(' '),
@@ -246,20 +246,30 @@ export const getValidAccessToken = async (
   }
   const data = doc.data() as StoredIntegration;
 
-  let accessToken = decrypt(data.accessTokenEnc);
+  // Try the current domain purpose first, then the legacy default purpose
+  // (pre-separation rows).
+  const decryptEmailToken = (v: string): string => {
+    try {
+      return decrypt(v, CryptoPurpose.EmailToken);
+    } catch {
+      return decrypt(v, CryptoPurpose.Default);
+    }
+  };
+
+  let accessToken = decryptEmailToken(data.accessTokenEnc);
   const expiresAt = data.expiresAt;
 
   if (Date.now() >= expiresAt - 60000) {
     if (!data.refreshTokenEnc) {
       throw new AppError('Connected account session expired. Please reconnect in Settings.', 401);
     }
-    const refreshed = await refreshTokens(provider, decrypt(data.refreshTokenEnc));
+    const refreshed = await refreshTokens(provider, decryptEmailToken(data.refreshTokenEnc));
     accessToken = refreshed.access_token;
     await doc.ref.set(
       {
-        accessTokenEnc: encrypt(accessToken),
+        accessTokenEnc: encrypt(accessToken, CryptoPurpose.EmailToken),
         refreshTokenEnc: refreshed.refresh_token
-          ? encrypt(refreshed.refresh_token)
+          ? encrypt(refreshed.refresh_token, CryptoPurpose.EmailToken)
           : data.refreshTokenEnc,
         expiresAt: refreshed.expires_in ? Date.now() + refreshed.expires_in * 1000 : expiresAt,
       },

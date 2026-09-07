@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import { analyzeMeeting } from './ai-service.js';
 import bufferService from './buffer-service.js';
-import { getDailyAnalysisCount, getMonthlyAnalysisCount, DAILY_ANALYSIS_LIMIT, FREE_ANALYSIS_LIMIT } from './usage-service.js';
+import { getDailyAnalysisCount, getMonthlyAnalysisCount, recordAnalysisUsage, DAILY_ANALYSIS_LIMIT, FREE_ANALYSIS_LIMIT } from './usage-service.js';
 import log from '../utils/logger.js';
 
 interface TranscriptSegment {
@@ -140,6 +140,16 @@ class TranscriptAnalysisPipeline {
       const analysisResult = await this.performAnalysis(deltaTranscript, apiKey);
       
       if (analysisResult) {
+        // Record usage so live-meeting server-key burns count toward quota.
+        // Best-effort: never block emit on usage-write failure.
+        try {
+          await recordAnalysisUsage(quotaUid, meetingId);
+        } catch (usageErr) {
+          log.warn('Failed to record pipeline analysis usage', {
+            meetingId,
+            error: usageErr instanceof Error ? usageErr.message : usageErr,
+          });
+        }
         if (analysisResult.suggestions) {
           await this.emitSuggestions(meetingId, analysisResult.suggestions);
         }

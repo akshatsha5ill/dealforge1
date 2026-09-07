@@ -4,6 +4,7 @@ import { RichTextEditor } from '../common/RichTextEditor';
 import { Lead, EmailSequenceStep } from '../../types';
 import { IntegrationInfo } from '../../services/email-integration';
 import { useStore } from '../../store';
+import { leadsDB } from '../../services/local-db/leads';
 import './Email.css';
 
 interface EmailForm {
@@ -62,6 +63,8 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
 
   const connectedProviders = integrations.filter((i) => i.connected).map((i) => i.provider);
   const isDrip = form.type === 'drip_campaign';
+  const selectedLead = leads.find((l) => l.id === form.leadId);
+  const isOptedIn = (selectedLead?.consentStatus || '').trim().toLowerCase() === 'opted_in';
   const anthropicKey = useStore((s) => s.anthropicKey);
   const geminiKey = useStore((s) => s.geminiKey);
   const hasAiKey = !!(openAiKey || anthropicKey || geminiKey);
@@ -164,6 +167,29 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
           <span className="lead-info-dot">·</span>
           <span>{getLeadCompany(form.leadId)}</span>
         </div>
+      )}
+
+      {form.leadId && (
+        <label className="consent-check" style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '16px', fontSize: '13px' }}>
+          <input
+            type="checkbox"
+            checked={isOptedIn}
+            onChange={(e) => {
+              const next = e.target.checked ? 'opted_in' : 'opted_out';
+              if (form.leadId) {
+                void leadsDB.setConsentStatus(form.leadId, next, { source: 'compose-card' }).catch(() => {});
+                // Optimistic local update so the gate state is visible immediately.
+                const lead = leads.find((l) => l.id === form.leadId);
+                if (lead) lead.consentStatus = next;
+              }
+            }}
+            style={{ marginTop: '2px' }}
+          />
+          <span>
+            This recipient has opted in to marketing email.
+            {isDrip && !isOptedIn && ' Drip campaigns require opt-in and will not send until checked.'}
+          </span>
+        </label>
       )}
 
       {form.type !== 'drip_campaign' && (

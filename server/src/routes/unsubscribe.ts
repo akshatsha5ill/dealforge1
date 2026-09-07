@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { record } from '../services/suppression-service.js';
+import { config } from '../config.js';
 
 const router = express.Router();
 
@@ -11,15 +12,16 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // HMAC-signed email token (reuses tracking sign secret/algo).
 // Token forms accepted: raw hex HMAC(normalized-email), or signed
-// `email.sig` (tracking sign style). No secret (dev/test) allows
-// unsigned, mirroring tracking.ts legacy fallback.
+// `email.sig` (tracking sign style). Fail-closed in prod when no secret is
+// configured (mirrors tracking.ts): reject instead of allowing any token to
+// mass-suppress anyone. In non-prod, allow unsigned for dev/test.
 const getTrackingSecret = (): string =>
   process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
 
 function verifyEmailToken(email: string, token: string): boolean {
   if (!token) return false;
   const secret = getTrackingSecret();
-  if (!secret) return true;
+  if (!secret) return config.isProd ? false : true;
   const normalized = email.trim().toLowerCase();
   const expected = crypto.createHmac('sha256', secret).update(normalized).digest('hex');
   try {

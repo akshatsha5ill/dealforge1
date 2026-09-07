@@ -34,10 +34,11 @@ const isAllowedSocketOrigin = (origin: string | undefined): boolean => {
   if (!origin) return true;
   if (allowedOrigins.has(origin)) return true;
   if (!allowPreviewOrigins) return false;
+  // See app.ts isAllowedOrigin: explicit CLIENT_URLS allowlist only, plus the
+  // trusted Zoom client. No *.vercel.app wildcard (attacker-deployable).
   try {
     const hostname = new URL(origin).hostname;
     if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
-    if (hostname.endsWith('.vercel.app')) return true;
   } catch {
     // fall through to deny
   }

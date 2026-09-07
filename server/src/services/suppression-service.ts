@@ -1,4 +1,5 @@
 import { getFirebaseFirestore } from './firebase-admin.js';
+import { config } from '../config.js';
 import log from '../utils/logger.js';
 
 /**
@@ -78,7 +79,9 @@ function toIsoAt(at?: string | Date): string {
 
 /**
  * Fetch the suppression record for an email, or null if not suppressed.
- * Fails open (null) when Firestore is unavailable; consults memory fallback.
+ * Fail-closed in prod: throws on Firestore outage unless the in-memory
+ * fallback has a hit (prior write kept in memory still suppresses).
+ * In non-prod, falls back to memory/null so dev without Firebase works.
  */
 export async function getSuppression(email: string): Promise<SuppressionRecord | null> {
   const normalized = normalizeEmail(email);
@@ -107,10 +110,21 @@ export async function getSuppression(email: string): Promise<SuppressionRecord |
       };
     }
   } catch (err) {
-    log.error('Firestore suppression lookup unavailable, checking memory fallback', {
+    const memHit = memoryStore.get(normalized);
+    if (memHit) {
+      log.warn('Firestore suppression lookup failed, using memory fallback hit', {
+        email: normalized,
+      });
+      return memHit;
+    }
+    log.error('Firestore suppression lookup unavailable', {
       error: err,
       email: normalized,
     });
+    // Fail-closed in prod so outage never sends to bounced/complained/
+    // unsubscribed addresses. Memory-only state is per-process and lost on
+    // restart, so a miss must block rather than allow.
+    if (config.isProd) throw err;
   }
 
   return memoryStore.get(normalized) ?? null;
@@ -119,8 +133,10 @@ export async function getSuppression(email: string): Promise<SuppressionRecord |
 /**
  * Check whether an email is suppressed (bounce/complaint/unsubscribe/stop-on-reply).
  * Returns true when a suppression record exists, false otherwise.
- * Display-safe / fail-open: returns false on Firestore outage (unless memory fallback has it).
- * Do NOT use for pre-send enforcement — use checkStrict() instead.
+ * Fail-closed in prod: throws on Firestore outage (unless memory fallback has
+ * it) so callers block send. For display-only paths that must never throw,
+ * catch and treat error as suppressed. For pre-send enforcement use
+ * checkStrict() instead.
  */
 export async function check(email: string): Promise<boolean> {
   const record = await getSuppression(email);
@@ -156,6 +172,9 @@ export async function checkStrict(email: string): Promise<boolean> {
  * Record a suppression: creates/overwrites
  * `suppressions/{normalized-email}` with { email, kind, at, ...opts }.
  * Also mirrors into the in-memory fallback so dev/test without Firestore works.
+ * Fail-closed in prod: throws on Firestore write failure (memory-only state
+ * is per-process and lost on restart, so callers must retry rather than
+ * assume durable suppression).
  */
 export async function record(
   email: string,
@@ -179,17 +198,19 @@ export async function record(
     ...(opts.source ? { source: opts.source } : {}),
   };
 
-  // Keep memory fallback in sync first so a Firestore outage still suppresses.
+  // Keep memory fallback in sync first so a Firestore outage still suppresses
+  // in-process (checkStrict consults it after a successful read).
   memoryStore.set(normalized, entry);
 
   try {
     await getFirebaseFirestore().collection(COLLECTION).doc(normalized).set(entry);
   } catch (err) {
-    log.error('Firestore suppression write failed, kept in memory fallback', {
+    log.error('Firestore suppression write failed', {
       error: err,
       email: normalized,
       kind,
     });
+    if (config.isProd) throw err;
   }
 
   return entry;

@@ -38,7 +38,7 @@ vi.mock('../services/firebase-admin.js', () => {
   };
 });
 
-const { decrypt } = await import('../utils/crypto.js');
+const { decrypt, CryptoPurpose } = await import('../utils/crypto.js');
 const { __docRefs } = await import('../services/firebase-admin.js');
 const oauth = await import('./email-oauth.js');
 
@@ -88,10 +88,10 @@ describe('email-oauth service', () => {
       expect(parsed.searchParams.get('access_type')).toBe('offline');
       const state = parsed.searchParams.get('state');
       expect(state).toBeTruthy();
-      expect(JSON.parse(decrypt(state!))).toEqual(
+      expect(JSON.parse(decrypt(state!, CryptoPurpose.EmailOAuthState))).toEqual(
         expect.objectContaining({ uid: 'user-1', redirect: 'https://app.example/settings' }),
       );
-      const payload = JSON.parse(decrypt(state!)) as { nonce?: string; exp?: number };
+      const payload = JSON.parse(decrypt(state!, CryptoPurpose.EmailOAuthState)) as { nonce?: string; exp?: number };
       expect(typeof payload.nonce).toBe('string');
       expect(typeof payload.exp).toBe('number');
     });
@@ -127,8 +127,8 @@ describe('email-oauth service', () => {
       const stored = __docRefs.get('user-1:gmail');
       expect(stored).toBeTruthy();
       expect(stored.email).toBe('user@example.com');
-      expect(decrypt(stored.accessTokenEnc)).toBe('access-123');
-      expect(decrypt(stored.refreshTokenEnc)).toBe('refresh-456');
+      expect(decrypt(stored.accessTokenEnc, CryptoPurpose.EmailToken)).toBe('access-123');
+      expect(decrypt(stored.refreshTokenEnc, CryptoPurpose.EmailToken)).toBe('refresh-456');
       expect(stored.expiresAt).toBeGreaterThan(Date.now());
     });
 
@@ -151,8 +151,8 @@ describe('email-oauth service', () => {
       const cryptoMod = await import('../utils/crypto.js');
       __docRefs.set('user-1:gmail', {
         email: 'user@example.com',
-        accessTokenEnc: cryptoMod.encrypt('expired-token'),
-        refreshTokenEnc: cryptoMod.encrypt('refresh-456'),
+        accessTokenEnc: cryptoMod.encrypt('expired-token', cryptoMod.CryptoPurpose.EmailToken),
+        refreshTokenEnc: cryptoMod.encrypt('refresh-456', cryptoMod.CryptoPurpose.EmailToken),
         expiresAt: Date.now() - 1000,
         connectedAt: new Date().toISOString(),
         scopes: [],

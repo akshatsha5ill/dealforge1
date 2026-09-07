@@ -11,7 +11,7 @@ import { AppError } from '../middleware/errorHandler.js';
 import log from '../utils/logger.js';
 import zoomRTMS from '../services/zoom-rtms.js';
 import transcriptAnalysisPipeline from '../services/transcript-analysis-pipeline.js';
-import { encrypt, decrypt } from '../utils/crypto.js';
+import { encrypt, decrypt, CryptoPurpose } from '../utils/crypto.js';
 import { FieldValue } from 'firebase-admin/firestore';
 
 const router = express.Router();
@@ -68,26 +68,48 @@ function getBufferOwnerUid(meta: Record<string, unknown> | null | undefined): st
   return null;
 }
 
-// POST path: require webhook-created meeting meta before any claim.
-// FIX: deny if no meeting meta exists — first-claim pre-registration allowed
-// any authenticated user to pre-claim an arbitrary victim meetingId via
-// POST /transcription or /notes, then meeting.started preserved the
-// attacker's ownerUid and locked out the real owner. Ownership may now only
-// be claimed on a meta previously created by meeting.started (or legacy
-// owner-less migration); unauthenticated webhook payload remains the sole
-// meeting creator.
+// POST path: require webhook-created meeting meta with a resolved owner.
+// FIX: deny if no meeting meta exists (blocks pre-registration of arbitrary
+// victim meetingIds), AND deny if meta exists but is ownerless (blocks the
+// first-claimer race where a webhook without a resolvable host_id stores an
+// ownerless meta and the first POSTer — attacker or victim — permanently
+// claims it, locking out the real owner with 403). The webhook remains the
+// sole meeting creator; exception is a host-bound claim below, where the
+// poster proves they are the Zoom host for this meeting.
 async function ensureBufferOwnership(meetingId: string, uid: string): Promise<boolean> {
   const meta = await bufferService.get<Record<string, unknown>>(`meeting:${meetingId}`);
   if (!meta) {
     return false;
   }
   const owner = getBufferOwnerUid(meta);
-  if (!owner) {
-    (meta as Record<string, unknown>).ownerUid = uid;
-    await bufferService.store(`meeting:${meetingId}`, meta);
-    return true;
+  if (owner) {
+    return owner === uid;
   }
-  return owner === uid;
+  // Ownerless meta (webhook could not resolve host_id to a linked user).
+  // Allow claim ONLY when the poster proves host ownership: their linked
+  // zoomUserId must equal the hostId stored by meeting.started. Otherwise
+  // deny for everyone (fail-closed) — including the legitimate host until
+  // they link their Zoom account.
+  const hostId = (meta as Record<string, unknown>).hostId;
+  if (typeof hostId !== 'string' || !hostId) {
+    log.warn('Denying buffer claim on ownerless meeting without host binding', { meetingId });
+    return false;
+  }
+  try {
+    const userDoc = await getFirebaseFirestore().collection('users').doc(uid).get();
+    const linkedZoomId = userDoc.data()?.zoomUserId as unknown;
+    if (typeof linkedZoomId === 'string' && linkedZoomId && linkedZoomId === hostId) {
+      (meta as Record<string, unknown>).ownerUid = uid;
+      await bufferService.store(`meeting:${meetingId}`, meta);
+      log.info('Buffer ownership claimed via host binding', { meetingId });
+      return true;
+    }
+  } catch (err) {
+    log.warn('Host-binding ownership check failed, denying claim', { meetingId, error: err });
+    return false;
+  }
+  log.warn('Denying buffer claim: poster is not the meeting host', { meetingId });
+  return false;
 }
 
 // GET/DELETE path: strict check, never creates.
@@ -154,7 +176,7 @@ router.post('/oauth/start', verifyAuth, validateRequest({ body: zoomStartSchema 
       const nonce = crypto.randomBytes(16).toString('hex');
       const exp = Date.now() + ZOOM_OAUTH_STATE_TTL_MS;
       pendingZoomOAuthStates.set(nonce, exp);
-      return encrypt(JSON.stringify({ uid: req.user!.uid, redirect: rawRedirect, nonce, exp }));
+      return encrypt(JSON.stringify({ uid: req.user!.uid, redirect: rawRedirect, nonce, exp }), CryptoPurpose.ZoomOAuthState);
     })(),
   });
   res.status(200).json({ url: `https://zoom.us/oauth/authorize?${params.toString()}` });
@@ -186,7 +208,7 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
   let stateRedirect: string | undefined;
   if (typeof state === 'string' && state) {
     try {
-      const parsed = JSON.parse(decrypt(state)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
+      const parsed = JSON.parse(decrypt(state, CryptoPurpose.ZoomOAuthState)) as { uid?: string; redirect?: string; nonce?: string; exp?: number };
       if (!parsed.uid) throw new Error('Missing uid in state');
       // Require nonce + expiry to block state replay (mirrors email-oauth).
       if (!parsed.nonce || typeof parsed.exp !== 'number') throw new Error('Missing nonce/exp in state');
@@ -250,15 +272,23 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
       return next(new AppError((tokenRes.reason || tokenRes.error) as string, 400));
     }
 
-    // Persist tokens to the user's Firestore document
+    // Persist tokens to the user's Firestore document.
+    // State binding: when BOTH the signed state uid and a Bearer uid are
+    // present they must match. Without this, a replayed victim code+state
+    // presented with an attacker token links the victim's Zoom to the attacker.
     const authHeader = req.headers.authorization;
     let uid: string | null = stateUid;
     if (authHeader?.startsWith('Bearer ')) {
       try {
         const idToken = authHeader.split('Bearer ')[1];
         const decoded = await getFirebaseAuth().verifyIdToken(idToken);
+        if (stateUid && decoded.uid !== stateUid) {
+          log.warn('Zoom OAuth state/bearer uid mismatch, rejecting', { stateUid });
+          return next(new AppError('OAuth state does not match authenticated user', 403));
+        }
         uid = decoded.uid;
-      } catch {
+      } catch (err) {
+        if (err instanceof AppError) return next(err);
         // fall through to state-based uid
       }
     }
@@ -286,8 +316,8 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
     if (uid) {
       await getFirebaseFirestore().collection('users').doc(uid).set({
         zoomLinked: true,
-        zoomAccessTokenEnc: encrypt(zoomAccessToken),
-        zoomRefreshTokenEnc: encrypt(zoomRefreshToken),
+        zoomAccessTokenEnc: encrypt(zoomAccessToken, CryptoPurpose.ZoomToken),
+        zoomRefreshTokenEnc: encrypt(zoomRefreshToken, CryptoPurpose.ZoomToken),
         zoomTokenExpiresAt: tokenRes.expires_in
           ? Date.now() + (tokenRes.expires_in as number) * 1000
           : null,
@@ -314,13 +344,18 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
   }
 });
 
-// Decrypt a stored Zoom token. Supports legacy plaintext values written before
-// the encryption fix so existing links keep working until refresh/reconnect.
+// Decrypt a stored Zoom token. Tries the current domain purpose first, then
+// the legacy default purpose (pre-separation rows), then plaintext (pre-
+// encryption rows) so existing links keep working until refresh/reconnect.
 function decryptStoredToken(stored: string): string {
   try {
-    return decrypt(stored);
+    return decrypt(stored, CryptoPurpose.ZoomToken);
   } catch {
-    return stored;
+    try {
+      return decrypt(stored, CryptoPurpose.Default);
+    } catch {
+      return stored;
+    }
   }
 }
 
@@ -387,8 +422,8 @@ export async function getValidZoomAccessToken(uid: string): Promise<string> {
     accessToken = refreshed.access_token;
     await docRef.set(
       {
-        zoomAccessTokenEnc: encrypt(accessToken),
-        ...(refreshed.refresh_token ? { zoomRefreshTokenEnc: encrypt(refreshed.refresh_token) } : {}),
+        zoomAccessTokenEnc: encrypt(accessToken, CryptoPurpose.ZoomToken),
+        ...(refreshed.refresh_token ? { zoomRefreshTokenEnc: encrypt(refreshed.refresh_token, CryptoPurpose.ZoomToken) } : {}),
         zoomTokenExpiresAt: refreshed.expires_in ? Date.now() + refreshed.expires_in * 1000 : expiresAt,
         zoomAccessToken: FieldValue.delete(),
         zoomRefreshToken: FieldValue.delete(),
@@ -465,6 +500,9 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
           status: 'active',
           topic,
           ...(ownerUid ? { ownerUid } : {}),
+          // Persist host binding so a later host-bound claim can prove
+          // ownership without a first-claimer race (see ensureBufferOwnership).
+          ...(typeof hostZoomId === 'string' && hostZoomId ? { hostId: hostZoomId } : {}),
           ...(existingMeta && typeof existingMeta === 'object' ? { createdAt: (existingMeta as Record<string, unknown>).createdAt ?? (existingMeta as Record<string, unknown>).startedAt } : {}),
         });
 

@@ -19,8 +19,15 @@ type EnrichedLead = Lead & { needs_enrichment?: boolean };
 function sanitizeLead<T extends Partial<Lead>>(lead: T): T & { needs_enrichment: boolean } {
   const normalized = normalizeEmail((lead as any).email);
   const needs_enrichment = normalized === null;
+  // Fail-closed consent default: leads without an explicit consentStatus are
+  // 'unknown', which the drip worker gate treats as not sendable. Consent can
+  // only become 'opted_in' via setConsentStatus() (explicit user action).
+  const consentStatus = typeof (lead as any).consentStatus === 'string' && (lead as any).consentStatus
+    ? (lead as any).consentStatus
+    : 'unknown';
   return {
     ...lead,
+    consentStatus,
     email: normalized ?? '',
     needs_enrichment,
     customFields: {
@@ -62,6 +69,18 @@ export const leadsDB = {
   },
   delete: (id: string): Promise<void> => db.leads.delete(id),
   count: (): Promise<number> => db.leads.count(),
+
+  setConsentStatus: (
+    id: string,
+    consentStatus: NonNullable<Lead['consentStatus']>,
+    opts?: { source?: string; basis?: string },
+  ): Promise<number> => db.leads.update(id, {
+    consentStatus,
+    ...(opts?.source ? { consentSource: opts.source } : {}),
+    ...(opts?.basis ? { consentBasis: opts.basis } : {}),
+    consentCapturedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as Partial<Lead>),
   
   createLeadsFromAnalysis: async (meetingId: string, analyzedLeads: any[]): Promise<number> => {
     if (!analyzedLeads || analyzedLeads.length === 0) return 0;

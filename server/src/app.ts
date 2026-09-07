@@ -74,10 +74,13 @@ const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (!origin) return true;
   if (allowedOrigins.has(origin)) return true;
   if (!allowPreviewOrigins) return false;
+  // Preview origins (dev only unless ALLOW_PREVIEW_ORIGINS=true): allow the
+  // trusted Zoom client only. Preview deployments must be allowlisted
+  // explicitly via CLIENT_URLS — never wildcard *.vercel.app (any attacker
+  // can deploy there and would receive ACAO with Authorization/x-api-key).
   try {
     const hostname = new URL(origin).hostname;
     if (hostname === 'zoom.us' || hostname.endsWith('.zoom.us')) return true;
-    if (hostname.endsWith('.vercel.app')) return true;
   } catch {
     // fall through to deny
   }

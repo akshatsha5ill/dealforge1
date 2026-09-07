@@ -7,9 +7,10 @@ import { getValidAccessToken } from '../services/email-oauth.js';
 import { AIFactory } from '../services/ai-providers.js';
 import { recordAnalysisUsage } from '../services/usage-service.js';
 import { AppError } from '../middleware/errorHandler.js';
-import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit } from '../middleware/plan.js';
+import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit, requirePlan } from '../middleware/plan.js';
 import { validateRequest } from '../middleware/validateRequest.js';
 import { checkStrict } from '../services/suppression-service.js';
+import { config } from '../config.js';
 import { registerClickTarget } from './tracking.js';
 
 // Re-export for any existing imports
@@ -38,7 +39,15 @@ const getTrackingBaseUrl = (req: Request): string => {
 
 const signTrackingUid = (uid: string): string => {
   const secret = process.env.TRACKING_SECRET || process.env.SESSION_SECRET || '';
-  if (!secret) return uid;
+  // Fail-closed in prod: never emit a raw Firebase uid in email URLs/logs and
+  // never emit forgeable tracking tokens. Mirrors tracking.ts verify (which
+  // rejects unsigned uids in prod) and getTrackingBaseUrl above.
+  if (!secret) {
+    if (config.isProd || process.env.NODE_ENV === 'production') {
+      throw new AppError('TRACKING_SECRET is not configured.', 500);
+    }
+    return uid;
+  }
   const sig = crypto.createHmac('sha256', secret).update(uid).digest('hex');
   return `${uid}.${sig}`;
 };
@@ -62,8 +71,14 @@ const sendSchema = z.object({
 
 
 router.post(
-  '/send', 
+  '/send',
   validateRequest({ body: sendSchema }),
+  // Defense-in-depth plan gate: app.ts also mounts requirePlan('pro') for
+  // /api/email, but the router must enforce itself so a free authed user
+  // cannot POST directly and bypass UI canEmail checks (BYO-key = zero
+  // server cost). Placed after validateRequest so 400 validation tests
+  // still pass before the Firestore plan lookup.
+  requirePlan('pro'),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { to, subject, body, campaignId, unsubscribeUrl, replyTo, isBulk, trackingConsent, via = 'resend' } = req.body;

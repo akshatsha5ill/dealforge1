@@ -79,6 +79,8 @@ class LeadAutomationService {
         name,
         email: normalizedEmail ?? '',
         needs_enrichment,
+        // Fail-closed: auto-created leads are never implicitly opted in.
+        consentStatus: 'unknown',
         customFields: {
           ...(lead?.customFields ?? {}),
           ...(needs_enrichment ? { needs_enrichment: true } : {}),
@@ -148,6 +150,8 @@ class LeadAutomationService {
         name: (typeof participant.user_name === 'string' ? participant.user_name.trim() : '') || 'Unknown Participant',
         email: normalizedParticipantEmail ?? '',
         needs_enrichment,
+        // Fail-closed: auto-created leads are never implicitly opted in.
+        consentStatus: 'unknown',
         customFields: {
           ...(needs_enrichment ? { needs_enrichment: true } : {}),
         },

@@ -25,9 +25,10 @@ function getProductIdForPlan(plan: string): string | null {
   return null;
 }
 
-// Plan minimums in cents: pro $29, enterprise $79. Amounts from the gateway
-// may be in cents (2900) or dollars (29) — accept either unit. Missing
-// amounts fall back to allow (product check already gates the plan).
+// Plan minimums in cents: pro $29, enterprise $79. Dodo reports amounts in
+// the currency's smallest unit (cents for USD, e.g. total_amount: 2900).
+// Strict cents-only: never accept dollar-unit values (29) since 29c ($0.29)
+// is numerically identical and would grant paid plans for cents.
 const PLAN_MINIMUM_CENTS: Record<'pro' | 'enterprise', number> = {
   pro: 2900,
   enterprise: 7900,
@@ -36,10 +37,7 @@ const PLAN_MINIMUM_CENTS: Record<'pro' | 'enterprise', number> = {
 function amountMeetsPlanMinimum(amount: number, plan: 'pro' | 'enterprise'): boolean {
   if (!Number.isFinite(amount)) return false;
   const minCents = PLAN_MINIMUM_CENTS[plan];
-  if (amount >= minCents) return true;
-  // Tolerate dollars (29/79): only values plausibly in dollars (<1000) count,
-  // so 2899c ($28.99) can't pass as $2899.
-  return amount >= minCents / 100 && amount < 1000;
+  return amount >= minCents;
 }
 
 // One-time payments are NOT forever: they grant Pro for a fixed window and
@@ -143,21 +141,23 @@ router.post('/verify', verifyAuth, validateRequest({ body: verifySchema }), asyn
         }
       }
     }
-    if (expectedProductId && candidateProductIds.length > 0 && !candidateProductIds.includes(expectedProductId)) {
+    if (expectedProductId && !candidateProductIds.includes(expectedProductId)) {
       return next(new AppError('Session product does not match plan', 400));
     }
 
-    // Validate a paid amount when the gateway exposes one.
+    // Fail-closed: require a paid amount meeting the plan minimum (cents).
+    // Missing amounts (trial/$0/no-field sessions) must never upgrade.
     const candidateAmounts = [
       session?.total_amount,
       session?.amount,
       session?.total,
       session?.grand_total,
       session?.payment_amount,
+      session?.recurring_pre_tax_amount,
       (metadata as Record<string, unknown>)?.amount,
     ];
     const numericAmounts = candidateAmounts.filter((v): v is number => typeof v === 'number');
-    if (numericAmounts.length > 0 && !numericAmounts.some((a) => amountMeetsPlanMinimum(a, plan))) {
+    if (!numericAmounts.some((a) => amountMeetsPlanMinimum(a, plan))) {
       return next(new AppError('Session amount below plan minimum', 400));
     }
 
@@ -308,6 +308,8 @@ function extractWebhookAmounts(data: any): number[] {
     data?.total,
     data?.grand_total,
     data?.payment_amount,
+    data?.recurring_pre_tax_amount,
+    data?.recurring_amount,
     data?.metadata?.amount,
   ];
   return candidates.filter((v): v is number => typeof v === 'number');
@@ -315,8 +317,10 @@ function extractWebhookAmounts(data: any): number[] {
 
 function webhookProductMatches(plan: 'pro' | 'enterprise', candidateIds: string[]): boolean {
   const expected = getProductIdForPlan(plan);
+  // Fail-closed: when the expected product is configured, require an explicit
+  // match. Empty candidateIds (gateway omitted product) must NOT pass — a $0/
+  // trial/no-field payload must never upgrade.
   if (!expected) return true;
-  if (candidateIds.length === 0) return true;
   return candidateIds.includes(expected);
 }
 
@@ -330,21 +334,20 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
     }
   }
 
-  // Fail closed in prod when the webhook signing key is missing; warn in dev.
+  // Fail closed in all envs when the webhook signing key is missing.
+  // Proceeding unverified in non-prod lets forged Subscription active /
+  // Payment succeeded events with metadata {userId, plan} grant Pro/Enterprise.
   const webhookKey = config.dodo.webhookKey || process.env.DODO_PAYMENTS_WEBHOOK_KEY;
   if (!webhookKey) {
     log.error('Dodo webhook key not configured, rejecting webhook');
-    if (config.isProd || process.env.NODE_ENV === 'production') {
-      return next(new AppError('Webhook not configured', 500));
-    }
-    log.warn('Dodo webhook key missing in non-prod, proceeding without verification');
+    return next(new AppError('Webhook not configured', 500));
   }
 
   try {
     const dodo = getDodoClient();
     const event = dodo.webhooks.unwrap(rawBody, {
       headers,
-      key: webhookKey || undefined,
+      key: webhookKey,
     });
 
     const eventId = getWebhookEventId(event as unknown as Record<string, unknown>, rawBody);
@@ -398,6 +401,17 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
         plan = parsed;
         const candidateIds: string[] = [];
         if (typeof data.product_id === 'string' && data.product_id) candidateIds.push(data.product_id);
+        // Collect product_cart / line_items ids when the gateway nests them.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const cart of [(data as any)?.product_cart, (data as any)?.cart, (data as any)?.line_items, (data as any)?.items]) {
+          if (Array.isArray(cart)) {
+            for (const item of cart) {
+              const pid = (item as { product_id?: unknown; productId?: unknown })?.product_id
+                ?? (item as { productId?: unknown })?.productId;
+              if (typeof pid === 'string' && pid) candidateIds.push(pid);
+            }
+          }
+        }
         if (!webhookProductMatches(parsed, candidateIds)) {
           log.warn('Webhook product does not match plan, ignoring', { subscriptionId: data.subscription_id, plan: parsed, productId: data.product_id });
           await markProcessed({ ignored: 'product-mismatch', subscriptionId: data.subscription_id });
@@ -405,7 +419,7 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
         }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const amounts = extractWebhookAmounts(data as any);
-        if (amounts.length > 0 && !amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
+        if (!amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
           log.warn('Webhook amount below plan minimum, ignoring', { subscriptionId: data.subscription_id });
           await markProcessed({ ignored: 'below-minimum', subscriptionId: data.subscription_id });
           return res.status(200).json({ status: 'ok' });
@@ -444,20 +458,32 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
           log.warn('Payment webhook has invalid plan, ignoring', { plan: metadata?.plan });
           await markProcessed({ ignored: 'invalid-plan' });
         } else {
-          // Validate product when the gateway exposes one.
+          // Fail-closed: product must match when expected is configured;
+          // empty candidates (no-field payloads) must not upgrade.
           const candidateIds: string[] = [];
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const d = data as any;
           for (const v of [d?.product_id, d?.productId, metadata?.product_id, metadata?.productId]) {
             if (typeof v === 'string' && v) candidateIds.push(v);
           }
+          // Also collect product_cart / line_items product ids when present.
+          for (const cart of [d?.product_cart, d?.cart, d?.line_items, d?.items, d?.products]) {
+            if (Array.isArray(cart)) {
+              for (const item of cart) {
+                const pid = (item as { product_id?: unknown; productId?: unknown })?.product_id
+                  ?? (item as { productId?: unknown })?.productId;
+                if (typeof pid === 'string' && pid) candidateIds.push(pid);
+              }
+            }
+          }
           if (!webhookProductMatches(parsed, candidateIds)) {
             log.warn('Payment webhook product does not match plan, ignoring', { plan: parsed });
             await markProcessed({ ignored: 'product-mismatch' });
           } else {
+            // Fail-closed: require a paid amount meeting the plan minimum.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const amounts = extractWebhookAmounts(data as any);
-            if (amounts.length > 0 && !amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
+            if (!amounts.some((a) => amountMeetsPlanMinimum(a, parsed))) {
               log.warn('Payment webhook amount below plan minimum, ignoring', { userId });
               await markProcessed({ ignored: 'below-minimum', userId });
             } else {
