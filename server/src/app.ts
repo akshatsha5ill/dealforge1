@@ -39,7 +39,7 @@ if (config.isProd && process.env.SENTRY_DSN) {
     if (Array.isArray(obj)) return obj.map(scrub);
     const out: Record<string, any> = { ...obj };
     for (const k of Object.keys(out)) {
-      if (/apiKey|transcript|email/i.test(k)) out[k] = '[Redacted]';
+      if (/api[-_]?key|transcript|email/i.test(k)) out[k] = '[Redacted]';
       else out[k] = scrub(out[k]);
     }
     return out;
@@ -50,6 +50,14 @@ if (config.isProd && process.env.SENTRY_DSN) {
     beforeSend(event) {
       if (event.request?.data) event.request.data = scrub(event.request.data);
       if (event.extra) event.extra = scrub(event.extra);
+      // BYO keys travel in headers — redact them (and auth material) wherever
+      // the SDK captured them.
+      const headers = (event.request as { headers?: Record<string, unknown> } | undefined)?.headers;
+      if (headers && typeof headers === 'object') {
+        for (const k of Object.keys(headers)) {
+          if (/api[-_]?key|authorization|cookie|set-cookie/i.test(k)) headers[k] = '[Redacted]';
+        }
+      }
       return event;
     },
   });
@@ -122,7 +130,7 @@ app.use(cors({
     callback(new Error('Not allowed by CORS'));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'X-Request-Id']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-ai-api-key', 'x-email-api-key', 'X-Request-Id']
 }));
 app.use(compression());
 
@@ -206,8 +214,11 @@ const publicApiLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) =>
-    (req.headers['x-api-key'] as string | undefined) || (req.ip ? ipKeyGenerator(req.ip) : 'unknown'),
+  // Key by client IP only — never by the attacker-controlled x-api-key header.
+  // Keying by header value would mint a fresh 60/min bucket per rotated fake
+  // key, and every guess burns Firestore reads in findApiKeyOwner (key doc +
+  // subscription doc), enabling brute-force + Firestore-read DoS.
+  keyGenerator: (req) => (req.ip ? ipKeyGenerator(req.ip) : 'unknown'),
   message: { error: 'API rate limit exceeded. Please slow down your requests.' }
 });
 
@@ -219,13 +230,23 @@ const emailWebhookLimiter = rateLimit({
   message: { error: 'Too many webhook requests' }
 });
 
+const SENSITIVE_QUERY_RE = /([?&])(token|code|state|api[-_]?key|x-[a-z-]*api[-_]?key|secret)(=[^&#]*)/gi;
+
+// Redact single-use credentials / tokens in query strings (?token=, ?code=,
+// ?state=, api keys). The WS handshake rejects query tokens and requires
+// auth.token, but polling URLs + proxies log the raw query — never persist
+// the secret itself.
+function redactSensitiveQuery(url: string): string {
+  return url.replace(SENSITIVE_QUERY_RE, '$1$2=[Redacted]');
+}
+
 const requestLogger = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
     log.info('Request', {
       method: req.method,
-      url: req.originalUrl,
+      url: redactSensitiveQuery(req.originalUrl),
       status: res.statusCode,
       duration: `${duration}ms`,
       requestId: (req as any).requestId,

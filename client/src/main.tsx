@@ -11,7 +11,7 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
     if (Array.isArray(obj)) return obj.map(scrub);
     const out: Record<string, any> = { ...obj };
     for (const k of Object.keys(out)) {
-      if (/apiKey|transcript|email/i.test(k)) out[k] = '[Redacted]';
+      if (/api[-_]?key|transcript|email/i.test(k)) out[k] = '[Redacted]';
       else out[k] = scrub(out[k]);
     }
     return out;
@@ -22,6 +22,12 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
     beforeSend(event) {
       if (event.request?.data) event.request.data = scrub(event.request.data);
       if (event.extra) event.extra = scrub(event.extra);
+      const headers = (event.request as { headers?: Record<string, unknown> } | undefined)?.headers;
+      if (headers && typeof headers === 'object') {
+        for (const k of Object.keys(headers)) {
+          if (/api[-_]?key|authorization|cookie|set-cookie/i.test(k)) headers[k] = '[Redacted]';
+        }
+      }
       return event;
     },
   });

@@ -26,16 +26,16 @@ const handleResponse = async <T>(response: Response): Promise<T> => {
 };
 
 export const apiClient = {
-  get: async <T = Record<string, unknown>>(endpoint: string): Promise<T> => {
+  get: async <T = Record<string, unknown>>(endpoint: string, extraHeaders?: Record<string, string>): Promise<T> => {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
-      headers: await getHeaders(),
+      headers: { ...(await getHeaders()), ...(extraHeaders || {}) },
     });
     return handleResponse<T>(response);
   },
-  post: async <T = Record<string, unknown>>(endpoint: string, data?: Record<string, unknown>): Promise<T> => {
+  post: async <T = Record<string, unknown>>(endpoint: string, data?: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<T> => {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
       method: 'POST',
-      headers: await getHeaders(),
+      headers: { ...(await getHeaders()), ...(extraHeaders || {}) },
       body: data ? JSON.stringify(data) : undefined,
     });
     return handleResponse<T>(response);

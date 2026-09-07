@@ -7,6 +7,13 @@ const CODE_LENGTH = 8;
 const CODE_CHARSET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const MAX_CLAIMS_PER_USER = 10;
 const MEETING_BONUS_DAYS = 90;
+// free_month credits expire like meeting bonuses so sockpuppet-farmed credits
+// can't stockpile indefinitely; billing consumes one fresh credit per paid
+// verification. Outstanding (unconsumed) free months are capped separately.
+const FREE_MONTH_EXPIRY_DAYS = 90;
+const MAX_FREE_MONTH_CREDIT = 3;
+
+export { FREE_MONTH_EXPIRY_DAYS, MAX_FREE_MONTH_CREDIT };
 
 export type ReferralBenefitType = 'meeting_bonus' | 'free_month';
 
@@ -137,6 +144,24 @@ export async function claimReferral(uid: string, rawCode: string, plan: 'free' |
         return { status: 'limit_reached', benefit: null, code } as ClaimResult;
       }
 
+      // Cap outstanding free_month credits: without this, one paid account
+      // plus N sockpuppet codes stockpiles N bonus months. Counted from the
+      // same snapshot (guarded reads: mock/partial docs count as non-credit).
+      if (benefit === 'free_month') {
+        const seen: Array<{ benefit?: unknown; claimedAt?: unknown }> = [];
+        for (const doc of claimsSnap?.docs ?? []) {
+          try {
+            const d = (doc as { data?: () => unknown }).data?.() as { benefit?: unknown; claimedAt?: unknown } | undefined;
+            if (d) seen.push(d);
+          } catch {
+            continue;
+          }
+        }
+        if (countFreshFreeMonths(seen) >= MAX_FREE_MONTH_CREDIT) {
+          return { status: 'limit_reached', benefit: null, code } as ClaimResult;
+        }
+      }
+
       tx.set(myClaimRef, { claimedAt, benefit });
       tx.set(claimRef, { claimedAt, benefit });
       return { status: 'claimed', benefit, code } as ClaimResult;
@@ -156,9 +181,26 @@ export async function getActiveMeetingBonus(uid: string): Promise<number> {
   return claims.filter((c) => c.benefit === 'meeting_bonus' && new Date(c.claimedAt).getTime() > cutoff).length;
 }
 
+export function countFreshFreeMonths(
+  claims: Array<{ benefit?: unknown; claimedAt?: unknown }>,
+  nowMs = Date.now(),
+): number {
+  const cutoff = nowMs - FREE_MONTH_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+  let n = 0;
+  for (const c of claims) {
+    try {
+      if (c?.benefit !== 'free_month') continue;
+      const t = typeof c.claimedAt === 'string' ? new Date(c.claimedAt).getTime() : NaN;
+      if (Number.isFinite(t) && (t as number) > cutoff) n++;
+    } catch {
+      continue;
+    }
+  }
+  return n;
+}
+
 export async function getFreeMonthsCredit(uid: string): Promise<number> {
-  const claims = await getMyClaims(uid);
-  return claims.filter((c) => c.benefit === 'free_month').length;
+  return countFreshFreeMonths(await getMyClaims(uid));
 }
 
 export async function getEffectiveAnalysisLimit(uid: string): Promise<number> {

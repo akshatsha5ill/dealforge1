@@ -23,11 +23,13 @@ router.post(
       if (!uid) {
         throw new AppError('Unauthorized', 401);
       }
-      if (req.user?.email_verified === false) {
-        throw new AppError('Email verification required', 403);
-      }
-      if (req.user?.email_verified === undefined) {
-        log.warn('Referral claim without email_verified claim, allowing (rate-limited)', { uid });
+      if (req.user?.email_verified !== true) {
+        // Fail-closed against sockpuppet farming: unverified (or unknown)
+        // addresses must not mint referral benefits. Firebase issues
+        // email_verified for password/federated sign-ins; anonymous and
+        // custom-token accounts without it stay ineligible.
+        log.warn('Referral claim without verified email, denying', { uid });
+        throw new AppError('Email verification required to claim referrals', 403);
       }
       const plan = ((req as unknown as { plan?: string }).plan as 'free' | 'pro' | 'enterprise') || 'free';
       const result = await claimReferral(uid, (req.body as { code: string }).code, plan);

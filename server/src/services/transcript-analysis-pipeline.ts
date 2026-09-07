@@ -1,7 +1,7 @@
 import { Server } from 'socket.io';
 import { analyzeMeeting } from './ai-service.js';
 import bufferService from './buffer-service.js';
-import { getDailyAnalysisCount, getMonthlyAnalysisCount, recordAnalysisUsage, DAILY_ANALYSIS_LIMIT, FREE_ANALYSIS_LIMIT } from './usage-service.js';
+import { AnalysisQuotaError, confirmAnalysisSlot, releaseAnalysisSlot, reserveAnalysisSlot, FREE_ANALYSIS_LIMIT } from './usage-service.js';
 import log from '../utils/logger.js';
 
 interface TranscriptSegment {
@@ -124,32 +124,27 @@ class TranscriptAnalysisPipeline {
         log.warn('Owner unresolved, skipping AI analysis (fail-closed)', { meetingId });
         return;
       }
-      const [dailyCount, monthlyCount] = await Promise.all([
-        getDailyAnalysisCount(quotaUid),
-        getMonthlyAnalysisCount(quotaUid),
-      ]);
-      if (dailyCount >= DAILY_ANALYSIS_LIMIT) {
-        log.warn('Daily analysis quota exceeded, skipping AI analysis', { meetingId, dailyCount, limit: DAILY_ANALYSIS_LIMIT });
-        return;
-      }
-      if (monthlyCount >= FREE_ANALYSIS_LIMIT) {
-        log.warn('Monthly analysis quota exceeded, skipping AI analysis', { meetingId, monthlyCount, limit: FREE_ANALYSIS_LIMIT });
+      // Pre-AI transactional reservation (fail-closed): over-quota meetings
+      // never burn a provider call, and concurrent pipelines can't overshoot.
+      // Quota reads here throw on outage instead of returning 0 (unlimited).
+      let reservationId: string | null = null;
+      try {
+        reservationId = await reserveAnalysisSlot(quotaUid, { meetingId, enforceMonthly: true, monthlyLimit: FREE_ANALYSIS_LIMIT });
+      } catch (quotaErr) {
+        if (quotaErr instanceof AnalysisQuotaError) {
+          log.warn('Analysis quota exceeded, skipping AI analysis', { meetingId, kind: quotaErr.kind, limit: quotaErr.limit });
+        } else {
+          log.warn('Quota check unavailable, skipping AI analysis (fail-closed)', { meetingId });
+        }
         return;
       }
 
       const analysisResult = await this.performAnalysis(deltaTranscript, apiKey);
-      
+
       if (analysisResult) {
-        // Record usage so live-meeting server-key burns count toward quota.
-        // Best-effort: never block emit on usage-write failure.
-        try {
-          await recordAnalysisUsage(quotaUid, meetingId);
-        } catch (usageErr) {
-          log.warn('Failed to record pipeline analysis usage', {
-            meetingId,
-            error: usageErr instanceof Error ? usageErr.message : usageErr,
-          });
-        }
+        // Confirm the reservation so the burn counts toward quota.
+        // Best-effort inside; the reservation already counted.
+        await confirmAnalysisSlot(quotaUid, reservationId, meetingId);
         if (analysisResult.suggestions) {
           await this.emitSuggestions(meetingId, analysisResult.suggestions);
         }
@@ -166,6 +161,9 @@ class TranscriptAnalysisPipeline {
           leadsGenerated: analysisResult?.leads?.length || 0
         });
       } else {
+        // Release the hold so a failed burn doesn't consume quota; the cursor
+        // stays put and the next interval retries.
+        await releaseAnalysisSlot(quotaUid, reservationId);
         log.warn('Transcript analysis failed, cursor not advanced - will retry on next interval', {
           meetingId,
           pendingSegments: newSegments.length,

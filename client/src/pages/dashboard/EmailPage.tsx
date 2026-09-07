@@ -208,8 +208,7 @@ export default function EmailPage() {
         previousEmails: campaigns
           .filter(c => c.leadId === form.leadId)
           .map(c => ({ subject: c.subject, body: c.body, sentAt: c.sentAt })),
-        apiKey: openAiKey,
-      });
+      }, { 'x-ai-api-key': openAiKey });
 
       setForm(prev => ({
         ...prev,
@@ -277,9 +276,8 @@ export default function EmailPage() {
           body: form.body,
           leadId: form.leadId,
           campaignId,
-          emailApiKey: useStore.getState().resendKey,
           via,
-        });
+        }, { 'x-email-api-key': useStore.getState().resendKey });
 
         const campaign = {
           id: campaignId,
@@ -363,9 +361,8 @@ export default function EmailPage() {
         body: campaign.body,
         leadId: campaign.leadId,
         campaignId: campaign.id,
-        emailApiKey: useStore.getState().resendKey,
         via,
-      });
+      }, { 'x-email-api-key': useStore.getState().resendKey });
 
       await db.email_campaigns.put({
         ...campaign,

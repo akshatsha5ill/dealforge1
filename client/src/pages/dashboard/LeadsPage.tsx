@@ -68,8 +68,7 @@ export default function LeadsPage() {
           stage: lead.stage
         },
         model,
-        apiKey
-      });
+      }, { 'x-ai-api-key': apiKey });
       
       if (data.score && data.score.score != null) {
         const newScore = data.score.score;

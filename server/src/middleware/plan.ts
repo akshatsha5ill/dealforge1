@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { getFirebaseFirestore } from '../services/firebase-admin.js';
-import { getMonthlyAnalysisCount } from '../services/usage-service.js';
+import { AnalysisQuotaError, releaseAnalysisSlot, reserveAnalysisSlot, DAILY_ANALYSIS_LIMIT } from '../services/usage-service.js';
 import { getEffectiveAnalysisLimit } from '../services/referral-service.js';
 import { AppError } from './errorHandler.js';
 import log from '../utils/logger.js';
@@ -91,59 +91,52 @@ export function enforceAiModelAccess(req: Request, _res: Response, next: NextFun
   return next();
 }
 
-// In-flight reservations per uid to close the check-then-use race between
-// enforceAnalysisLimit() (check) and recordAnalysisUsage() in routes/ai.ts
-// (use, after await analyzeMeeting()). Without this, N concurrent requests can
-// all read the same count < limit before any of them records usage.
-// Single-instance only; multi-instance deployments still need a Firestore
-// transaction/counter for a global guarantee.
-const pendingAnalyses = new Map<string, number>();
-
-export function __getPendingAnalysisCount(uid: string): number {
-  return pendingAnalyses.get(uid) ?? 0;
-}
-
-export function __clearPendingAnalysisCounts(): void {
-  pendingAnalyses.clear();
-}
-
+// Quota reservations are cross-instance (Firestore transaction in
+// reserveAnalysisSlot): N parallel requests across any number of instances
+// serialize on the month marker doc, so bursts can't multiply the free limit.
+// The reservation id is attached to the request; the route confirms it after
+// a successful AI call, or it is released when the response is an error.
 export function enforceAnalysisLimit() {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const uid = (req as unknown as { user?: { uid?: string } }).user?.uid;
     const plan = (req as unknown as { plan?: string }).plan || 'free';
-    if (!uid || plan !== 'free') {
+    if (!uid) {
       return next();
     }
+    const enforceMonthly = plan === 'free';
 
     try {
-      const count = await getMonthlyAnalysisCount(uid);
-      const limit = await getEffectiveAnalysisLimit(uid);
-      // Critical section below must stay synchronous (no await) so concurrent
-      // requests on this instance serialize on the event loop.
-      const pending = pendingAnalyses.get(uid) ?? 0;
-      if (count + pending >= limit) {
-        return next(new AppError(`You've reached your free limit of ${limit} analyzed meetings per month. Upgrade to Pro for unlimited meetings.`, 403));
-      }
-      pendingAnalyses.set(uid, pending + 1);
-      let released = false;
-      const release = (): void => {
-        if (released) return;
-        released = true;
-        const cur = pendingAnalyses.get(uid) ?? 0;
-        if (cur <= 1) {
-          pendingAnalyses.delete(uid);
-        } else {
-          pendingAnalyses.set(uid, cur - 1);
+      const monthlyLimit = enforceMonthly ? await getEffectiveAnalysisLimit(uid) : 0;
+      const body = (req as unknown as { body?: { meetingId?: unknown } }).body;
+      const meetingId = typeof body?.meetingId === 'string' ? body.meetingId : undefined;
+      let reservationId: string;
+      try {
+        reservationId = await reserveAnalysisSlot(uid, { meetingId, enforceMonthly, monthlyLimit });
+      } catch (err) {
+        if (err instanceof AnalysisQuotaError) {
+          const status = err.kind === 'daily' ? 429 : 403;
+          const message =
+            err.kind === 'daily'
+              ? `Daily analysis limit of ${DAILY_ANALYSIS_LIMIT} reached. Please try again tomorrow.`
+              : `You've reached your free limit of ${err.limit} analyzed meetings per month. Upgrade to Pro for unlimited meetings.`;
+          return next(new AppError(message, status));
         }
-      };
-      // Hold the reservation until the response settles (usage is recorded
-      // downstream in the route handler, after the AI call).
+        throw err;
+      }
+      (req as unknown as { analysisReservationId?: string }).analysisReservationId = reservationId;
       if (typeof (res as unknown as { on?: unknown }).on === 'function') {
-        (res as unknown as { on: (e: string, cb: () => void) => void }).on('finish', release);
-        (res as unknown as { on: (e: string, cb: () => void) => void }).on('close', release);
-      } else {
-        // No response emitter (direct unit invocation): avoid leaking the slot.
-        release();
+        const on = (res as unknown as { on: (e: string, cb: () => void) => void }).on.bind(res);
+        // Release the hold when the request fails; on success the route
+        // confirms it (release of a confirmed id is a no-op delete).
+        const maybeRelease = (): void => {
+          try {
+            if (res.statusCode >= 400) void releaseAnalysisSlot(uid, reservationId);
+          } catch {
+            // never break the response path
+          }
+        };
+        on('finish', maybeRelease);
+        on('close', maybeRelease);
       }
       return next();
     } catch (err) {

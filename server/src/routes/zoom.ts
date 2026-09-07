@@ -721,9 +721,29 @@ const withinZoomPayloadLimit = (val: unknown): boolean => {
   }
 };
 
+const SEGMENT_TEXT_MAX = 10000;
+const SEGMENT_FIELD_MAX = 200;
+
+// Shared tag-strip for buffered free text (mirrors the WS save_note path in
+// index.ts). The sanitize middleware already strips tags on these HTTP bodies;
+// this keeps the handler safe if middleware is ever skipped for the route.
+const stripBufferTags = (s: string): string => s.replace(/<[^>]*>/g, '');
+
+const segmentObjectSchema = z.object({
+  id: z.string().max(SEGMENT_FIELD_MAX).optional(),
+  speaker: z.string().max(SEGMENT_FIELD_MAX).optional(),
+  text: z.string().min(1).max(SEGMENT_TEXT_MAX),
+  startTime: z.union([z.string().max(SEGMENT_FIELD_MAX), z.number()]).optional(),
+  endTime: z.union([z.string().max(SEGMENT_FIELD_MAX), z.number()]).optional(),
+  source: z.string().max(SEGMENT_FIELD_MAX).optional(),
+}).strict();
+
 const transcriptionSchema = z.object({
   meetingId: z.string().min(1).max(200),
-  segment: z.union([z.string().max(ZOOM_PAYLOAD_MAX_BYTES), z.record(z.any())]).refine(withinZoomPayloadLimit, {
+  // Plain string is shorthand for { text }; arbitrary nested objects
+  // (z.record(z.any())) are rejected so non-string fields can't be stored or
+  // broadcast as objects.
+  segment: z.union([z.string().min(1).max(ZOOM_PAYLOAD_MAX_BYTES), segmentObjectSchema]).refine(withinZoomPayloadLimit, {
     message: 'segment exceeds 10kb size limit',
   }),
 });
@@ -736,15 +756,17 @@ router.post('/transcription', verifyAuth, validateRequest({ body: transcriptionS
     return;
   }
 
-  // Normalize segment to ensure consistent format
+  // Normalize segment to ensure consistent format. A plain-string segment is
+  // shorthand for { text }; the schema guarantees text is a non-empty string.
+  const seg = typeof segment === 'string' ? { text: segment } : segment;
   const normalizedSegment = {
-    id: segment.id || `transcript-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-    speaker: segment.speaker || 'Unknown Speaker',
-    text: segment.text,
-    startTime: segment.startTime,
-    endTime: segment.endTime,
+    id: (typeof seg.id === 'string' && seg.id) || `transcript-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    speaker: stripBufferTags(String(seg.speaker || 'Unknown Speaker')).slice(0, SEGMENT_FIELD_MAX) || 'Unknown Speaker',
+    text: stripBufferTags(seg.text).slice(0, SEGMENT_TEXT_MAX),
+    startTime: typeof seg.startTime === 'string' || typeof seg.startTime === 'number' ? seg.startTime : undefined,
+    endTime: typeof seg.endTime === 'string' || typeof seg.endTime === 'number' ? seg.endTime : undefined,
     timestamp: new Date().toISOString(),
-    source: segment.source || 'manual'
+    source: stripBufferTags(String(seg.source || 'manual')).slice(0, SEGMENT_FIELD_MAX) || 'manual'
   };
 
   const key = `transcript:${meetingId}`;
@@ -768,9 +790,17 @@ router.post('/transcription', verifyAuth, validateRequest({ body: transcriptionS
   res.status(200).json({ status: 'ok', segmentId: normalizedSegment.id });
 });
 
+const noteObjectSchema = z.object({
+  content: z.string().min(1).max(5000),
+  timestamp: z.string().max(100).optional(),
+  meetingId: z.string().max(200).optional(),
+}).strict();
+
 const notesSchema = z.object({
   meetingId: z.string().min(1).max(200),
-  note: z.union([z.string().max(ZOOM_PAYLOAD_MAX_BYTES), z.record(z.any())]).refine(withinZoomPayloadLimit, {
+  // Plain string is shorthand for { content }; mirrors the WS save_note
+  // contract ({ content, timestamp? }) so HTTP and WS validate identically.
+  note: z.union([z.string().min(1).max(ZOOM_PAYLOAD_MAX_BYTES), noteObjectSchema]).refine(withinZoomPayloadLimit, {
     message: 'note exceeds 10kb size limit',
   }),
 });
@@ -785,7 +815,14 @@ router.post('/notes', verifyAuth, validateRequest({ body: notesSchema }), async 
 
   const key = `notes:${meetingId}`;
   const existing = (await bufferService.get<{ notes: Array<Record<string, unknown>> }>(key)) || { notes: [] };
-  existing.notes.push({ ...note, receivedAt: new Date().toISOString() });
+  // Whitelist fields only: never spread the raw payload (a string note would
+  // fan out into char-indexed keys, and nested objects would be stored raw).
+  const raw = typeof note === 'string' ? { content: note } : note;
+  existing.notes.push({
+    content: stripBufferTags(raw.content).trim().slice(0, 5000),
+    ...(typeof raw.timestamp === 'string' ? { timestamp: stripBufferTags(raw.timestamp).slice(0, 100) } : {}),
+    receivedAt: new Date().toISOString(),
+  });
   await bufferService.store(key, existing);
 
   res.status(200).json({ status: 'ok' });

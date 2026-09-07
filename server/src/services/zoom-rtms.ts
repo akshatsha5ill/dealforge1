@@ -211,17 +211,23 @@ class ZoomRTMSService {
 
     const { speaker_name, text, transcript_id, start_time, end_time } = event.payload;
 
-    if (!text || typeof text !== 'string') {
+    if (!text || typeof text !== 'string' || !text.trim()) {
       log.warn('Invalid transcription event: missing text', { meetingId });
       return;
     }
+    // Bound server-originated payloads like the HTTP/WS ingest paths (10kb
+    // total there; per-field caps here). Trimmed so whitespace-only text and
+    // unbounded Zoom strings can't bloat the buffer or broadcasts.
+    if (text.length > 10000) {
+      log.warn('Transcription event text exceeds length cap, truncating', { meetingId });
+    }
 
     const segment = {
-      id: transcript_id || `transcript-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-      speaker: speaker_name || 'Unknown Speaker',
-      text: text.trim(),
-      startTime: start_time,
-      endTime: end_time,
+      id: (typeof transcript_id === 'string' && transcript_id.slice(0, 200)) || `transcript-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      speaker: (typeof speaker_name === 'string' ? speaker_name : 'Unknown Speaker').slice(0, 200) || 'Unknown Speaker',
+      text: text.trim().slice(0, 10000),
+      startTime: typeof start_time === 'string' || typeof start_time === 'number' ? start_time : undefined,
+      endTime: typeof end_time === 'string' || typeof end_time === 'number' ? end_time : undefined,
       timestamp: new Date().toISOString()
     };
 

@@ -5,12 +5,14 @@ import { z } from 'zod';
 import { sendDraft, sendViaGmail, sendViaOutlook } from '../services/email-service.js';
 import { getValidAccessToken } from '../services/email-oauth.js';
 import { AIFactory } from '../services/ai-providers.js';
-import { recordAnalysisUsage } from '../services/usage-service.js';
+import { confirmAnalysisSlot } from '../services/usage-service.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit, requirePlan } from '../middleware/plan.js';
 import { validateRequest } from '../middleware/validateRequest.js';
 import { checkStrict } from '../services/suppression-service.js';
 import { config } from '../config.js';
+import { getFirebaseFirestore } from '../services/firebase-admin.js';
+import { FieldValue } from 'firebase-admin/firestore';
 import { registerClickTarget } from './tracking.js';
 
 // Re-export for any existing imports
@@ -65,9 +67,35 @@ const sendSchema = z.object({
   // recipient gave tracking consent disclosed at send time; the sender then
   // forwards `consent=1` on the pixel/click URLs so events may be stored.
   trackingConsent: z.boolean().optional(),
+  // BYO key travels in the x-email-api-key header (never the body). Body key
+  // accepted only as a legacy fallback; header wins. Omitted entirely means
+  // "use the server Resend key" (Pro-gated below + daily quota).
   emailApiKey: z.string().min(1, "Missing Email API key").optional(),
   via: z.enum(['resend', 'gmail', 'outlook']).optional(),
 });
+
+// Daily outbound cap per user on POST /send. The 5/min rate limit alone
+// allows ~7200/day from one compromised Pro account on the trusted domain;
+// this bounds blast radius while leaving headroom above the 50/day client
+// drip cap for legitimate manual sends.
+const MAX_DAILY_EMAIL_SENDS = 200;
+
+function getDayKeyUTC(date = new Date()): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+async function checkAndRecordEmailUsage(uid: string): Promise<{ allowed: boolean; sentToday: number }> {
+  const day = getDayKeyUTC();
+  const ref = getFirebaseFirestore().collection('users').doc(uid).collection('email_usage').doc(day);
+  const snap = await ref.get();
+  const raw = snap.exists ? (snap.data()?.count as unknown) : 0;
+  const count = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
+  if (count >= MAX_DAILY_EMAIL_SENDS) return { allowed: false, sentToday: count };
+  // Atomic increment; the pre-read may overshoot by the 5/min window under
+  // concurrency, which is an acceptable bound (not a bypass).
+  await ref.set({ count: FieldValue.increment(1), updatedAt: new Date().toISOString() }, { merge: true });
+  return { allowed: true, sentToday: count + 1 };
+}
 
 
 router.post(
@@ -82,7 +110,8 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { to, subject, body, campaignId, unsubscribeUrl, replyTo, isBulk, trackingConsent, via = 'resend' } = req.body;
-      const emailApiKey = req.body.emailApiKey;
+      // Header-first: keeps the BYO key out of req.body (logs, Sentry payloads).
+      const emailApiKey = (req.header('x-email-api-key') || (req.body.emailApiKey as string) || '').trim();
       delete req.body.emailApiKey;
       delete req.body.via;
       const uid = req.user?.uid;
@@ -95,6 +124,18 @@ router.post(
         return res.status(503).json({ status: "error", message: "Suppression check unavailable" });
       }
 
+      // Daily quota (fail-closed on outage, like the suppression check).
+      if (uid) {
+        try {
+          const usage = await checkAndRecordEmailUsage(uid);
+          if (!usage.allowed) {
+            return res.status(429).json({ status: "error", message: `Daily email limit of ${MAX_DAILY_EMAIL_SENDS} reached. Please try again tomorrow.` });
+          }
+        } catch (quotaError) {
+          return res.status(503).json({ status: "error", message: "Send quota check unavailable" });
+        }
+      }
+
       let finalBody = body;
       
       if (campaignId && uid) {
@@ -104,8 +145,14 @@ router.post(
         // Absent/false = no flag = tracking defaults off (not stored).
         const consentSuffix = trackingConsent ? '&consent=1' : '';
         
-        finalBody = finalBody.replace(/<a\s+(?:[^>]*?\s+)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))([^>]*)>/gi, (match: string, dqUrl: string, sqUrl: string, uqUrl: string, rest: string) => {
+        finalBody = finalBody.replace(/<a\s+(?:[^>"']|"[^"]*"|'[^']*')*?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"']+))([^>]*)>/gi, (match: string, dqUrl: string, sqUrl: string, uqUrl: string, rest: string) => {
           const url = dqUrl ?? sqUrl ?? uqUrl ?? '';
+          // Neutralize scriptable hrefs: sender-supplied HTML must never ship
+          // javascript:/data:/vbscript: links to recipients from our domain.
+          const lowerUrl = url.trim().toLowerCase();
+          if (lowerUrl.startsWith('javascript:') || lowerUrl.startsWith('data:') || lowerUrl.startsWith('vbscript:')) {
+            return `<a href="#"${rest}>`;
+          }
           if (url.startsWith('http')) {
             const h = registerClickTarget(campaignId, url);
             const hSuffix = h ? `&h=${encodeURIComponent(h)}` : '';
@@ -130,7 +177,7 @@ router.post(
           ? await sendViaGmail(accessToken, to, subject, finalBody, undefined, bulkOptions)
           : await sendViaOutlook(accessToken, to, subject, finalBody, undefined, bulkOptions);
       } else {
-        data = await sendDraft(to, subject, finalBody, { apiKey: emailApiKey, campaignId, unsubscribeUrl, replyTo, isBulk });
+        data = await sendDraft(to, subject, finalBody, { apiKey: emailApiKey || undefined, campaignId, unsubscribeUrl, replyTo, isBulk });
       }
       return res.status(200).json({ status: "success", data });
     } catch (error) {
@@ -144,11 +191,21 @@ const draftSchema = z.object({
   leadContext: z.record(z.any()).optional(),
   meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
-  apiKey: z.string({ required_error: "invalid input" }).min(1, "invalid input")
+  // BYO key travels in the x-ai-api-key header (never the body). Body key
+  // accepted only as a legacy fallback; header wins.
+  apiKey: z.string({ required_error: "invalid input" }).min(1, "invalid input").optional()
 });
 
 const TRANSCRIPT_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
+// BYO-key presence check (no Firestore): accepts the x-ai-api-key header or a
+// legacy body key. Runs before attachPlan so missing keys 400 without needing
+// Firestore (keeps the route's "invalid input" validation contract).
+function requireByoKey(req: Request, _res: Response, next: NextFunction): void {
+  const key = (req.header('x-ai-api-key') || ((req.body as Record<string, unknown>)?.apiKey as string) || '').trim();
+  if (!key) return next(new AppError('invalid input: missing API key', 400));
+  return next();
+}
 function enforceTranscriptHistory(plan: string, meetingStartTime: string): void {
   if (plan !== 'free') return;
   const startTime = new Date(meetingStartTime).getTime();
@@ -163,15 +220,20 @@ function enforceTranscriptHistory(plan: string, meetingStartTime: string): void 
 router.post(
   '/draft',
   validateRequest({ body: draftSchema }),
+  requireByoKey,
   attachPlan(),
   enforceAiModelAccess,
   enforceAnalysisLimit(),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { transcript, leadContext, model, meetingStartTime } = req.body;
-      const apiKey = req.body.apiKey;
+      // Header-first: keeps the key out of req.body (logs, Sentry payloads).
+      const apiKey = (req.header('x-ai-api-key') || (req.body.apiKey as string) || '').trim();
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+      if (!apiKey) {
+        throw new AppError('Missing API key. Please configure your API key in Settings.', 400);
+      }
 
       const plan = (req as unknown as { plan?: string }).plan || 'free';
       if (plan === 'free' && !meetingStartTime) {
@@ -195,8 +257,8 @@ router.post(
       }
 
       const draft = await provider.generateEmailDraft(transcript, leadContext || {}) as Record<string, unknown>;
-      // Track usage for free-tier limit enforcement (best-effort)
-      await recordAnalysisUsage(uid, randomUUID());
+      // Confirm the pre-AI quota reservation (best-effort inside).
+      await confirmAnalysisSlot(uid, (req as unknown as { analysisReservationId?: string }).analysisReservationId ?? '', randomUUID());
       const subject = typeof draft.subject === 'string' ? draft.subject : '';
       const body = typeof draft.body === 'string' ? draft.body : typeof draft.content === 'string' ? (draft.content as string) : '';
       return res.status(200).json({ status: 'success', subject, body, draft });

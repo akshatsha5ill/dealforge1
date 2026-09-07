@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { validateRequest } from 'zod-express-middleware';
 import { analyzeMeeting } from '../services/ai-service.js';
 import { AIFactory } from '../services/ai-providers.js';
-import { recordAnalysisUsage } from '../services/usage-service.js';
+import { confirmAnalysisSlot } from '../services/usage-service.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { attachPlan, enforceAiModelAccess, enforceAnalysisLimit } from '../middleware/plan.js';
 
@@ -28,16 +28,28 @@ interface AuthenticatedRequest extends Request {
   user?: { uid: string };
 }
 
+// BYO-key presence check (no Firestore): accepts the x-ai-api-key header or a
+// legacy body key. Runs before attachPlan so missing keys 400 without needing
+// Firestore.
+function requireByoKey(req: Request, _res: Response, next: NextFunction): void {
+  const key = (req.header('x-ai-api-key') || ((req.body as Record<string, unknown>)?.apiKey as string) || '').trim();
+  if (!key) return next(new AppError('Missing API key. Please configure your API key in Settings.', 400));
+  return next();
+}
+
 const analyzeSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
   meetingId: z.string().min(1),
   meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
-  apiKey: z.string().min(1, "Missing API key")
+  // BYO key travels in the x-ai-api-key header (never the body). Body key
+  // accepted only as a legacy fallback; header wins.
+  apiKey: z.string().min(1, "Missing API key").optional()
 });
 
 router.post(
   '/analyze', 
+  requireByoKey,
   attachPlan(),
   enforceAiModelAccess,
   enforceAnalysisLimit(),
@@ -45,9 +57,13 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { transcript, meetingId, meetingStartTime, model } = req.body;
-      const apiKey = req.body.apiKey;
+      // Header-first: keeps the key out of req.body (logs, Sentry payloads).
+      const apiKey = (req.header('x-ai-api-key') || (req.body.apiKey as string) || '').trim();
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+      if (!apiKey) {
+        throw new AppError('Missing API key. Please configure your API key in Settings.', 400);
+      }
 
       const plan = (req as unknown as { plan?: string }).plan || 'free';
       if (plan === 'free' && !meetingStartTime) {
@@ -66,8 +82,10 @@ router.post(
 
       const analysis = await analyzeMeeting(transcript, effectiveModel, apiKey);
 
-      // Track usage for free-tier limit enforcement (best-effort, deduped by meetingId)
-      await recordAnalysisUsage(uid, meetingId);
+      // Confirm the pre-AI quota reservation (best-effort inside; the
+      // reservation itself already counted, so a write failure here can't
+      // grant free usage).
+      await confirmAnalysisSlot(uid, (req as unknown as { analysisReservationId?: string }).analysisReservationId ?? '', meetingId);
 
       return res.status(200).json({
         status: "success",
@@ -88,11 +106,14 @@ const scoreSchema = z.object({
   meetingId: z.string().min(1).optional(),
   meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
-  apiKey: z.string().min(1, "Missing API key")
+  // BYO key travels in the x-ai-api-key header (never the body). Body key
+  // accepted only as a legacy fallback; header wins.
+  apiKey: z.string().min(1, "Missing API key").optional()
 });
 
 router.post(
   '/score', 
+  requireByoKey,
   attachPlan(),
   enforceAiModelAccess,
   enforceAnalysisLimit(),
@@ -100,9 +121,13 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<any> => {
     try {
       const { transcript, leadContext, model, meetingId, meetingStartTime } = req.body;
-      const apiKey = req.body.apiKey;
+      // Header-first: keeps the key out of req.body (logs, Sentry payloads).
+      const apiKey = (req.header('x-ai-api-key') || (req.body.apiKey as string) || '').trim();
       // Securely drop API key from memory/request object immediately
       delete req.body.apiKey;
+      if (!apiKey) {
+        throw new AppError('Missing API key. Please configure your API key in Settings.', 400);
+      }
 
       const plan = (req as unknown as { plan?: string }).plan || 'free';
       if (plan === 'free' && !meetingStartTime) {
@@ -122,8 +147,8 @@ router.post(
       const provider = AIFactory.getProvider(effectiveModel, apiKey);
       const scoreResult = await provider.scoreLead(transcript, leadContext);
 
-      // Track usage for free-tier limit enforcement (best-effort)
-      await recordAnalysisUsage(uid, meetingId ?? randomUUID());
+      // Confirm the pre-AI quota reservation (best-effort inside).
+      await confirmAnalysisSlot(uid, (req as unknown as { analysisReservationId?: string }).analysisReservationId ?? '', meetingId ?? randomUUID());
 
       return res.status(200).json({
         status: "success",

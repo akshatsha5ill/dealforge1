@@ -90,7 +90,9 @@ describe('claimReferralCode', () => {
   });
 
   it('claims a meeting bonus with a 3-month expiry and tracks the event', async () => {
-    const { referral, trackEvent } = await freshModule();
+    const { referral, trackEvent, apiClient, auth } = await freshModule();
+    auth.currentUser = { uid: 'user-1' };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ claimStatus: 'claimed', benefit: 'meeting_bonus' } as never);
     const before = Date.now();
     const benefit = await referral.claimReferralCode('DF-ABCD2345');
 
@@ -104,8 +106,28 @@ describe('claimReferralCode', () => {
     expect(trackEvent).toHaveBeenCalledWith('referral_claimed');
   });
 
+  it('grants nothing until the server confirms (unauthenticated queues pending)', async () => {
+    const { referral, apiClient } = await freshModule();
+    const benefit = await referral.claimReferralCode('DF-ABCD2345');
+    expect(benefit).toBeNull();
+    expect(referral.getReferralBenefits()).toHaveLength(0);
+    expect(referral.getActiveMeetingBonusCount()).toBe(0);
+    expect(apiClient.post).not.toHaveBeenCalled();
+    expect(settingsStore.get('dealforge_referral_pending')).toBe('DF-ABCD2345');
+  });
+
+  it('grants nothing when the server rejects the claim', async () => {
+    const { referral, apiClient, auth } = await freshModule();
+    auth.currentUser = { uid: 'user-1' };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ claimStatus: 'invalid_code', benefit: null } as never);
+    expect(await referral.claimReferralCode('DF-ABCD2345')).toBeNull();
+    expect(referral.getReferralBenefits()).toHaveLength(0);
+  });
+
   it('deduplicates repeat claims of the same code', async () => {
-    const { referral } = await freshModule();
+    const { referral, apiClient, auth } = await freshModule();
+    auth.currentUser = { uid: 'user-1' };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ claimStatus: 'claimed', benefit: 'meeting_bonus' } as never);
     await referral.claimReferralCode('DF-ABCD2345');
     expect(await referral.claimReferralCode('DF-ABCD2345')).toBeNull();
     expect(referral.getReferralBenefits()).toHaveLength(1);
@@ -138,8 +160,10 @@ describe('claimReferralCode', () => {
 
 describe('benefit calculations', () => {
   it('adds active bonuses to the free meeting limit', async () => {
-    const { referral } = await freshModule();
+    const { referral, apiClient, auth } = await freshModule();
     expect(referral.getEffectiveMeetingLimit('free')).toBe(3);
+    auth.currentUser = { uid: 'user-1' };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ claimStatus: 'claimed', benefit: 'meeting_bonus' } as never);
     await referral.claimReferralCode('DF-ABCD2345');
     expect(referral.getEffectiveMeetingLimit('free')).toBe(4);
   });
@@ -185,7 +209,9 @@ describe('benefit calculations', () => {
 
 describe('initReferrals', () => {
   it('claims a referral code from the URL and cleans it', async () => {
-    const { referral } = await freshModule();
+    const { referral, apiClient, auth } = await freshModule();
+    auth.currentUser = { uid: 'user-1' };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ claimStatus: 'claimed', benefit: 'meeting_bonus' } as never);
     window.history.pushState({}, '', '/?ref=DF-ABCD2345');
     const benefit = await referral.initReferrals();
     expect(benefit).not.toBeNull();
@@ -218,6 +244,7 @@ describe('retryPendingReferral', () => {
 
     expect(apiClient.post).toHaveBeenCalledWith('/referrals/claim', { code: 'DF-ABCD2345' });
     expect(settingsStore.get('dealforge_referral_pending')).toBeNull();
+    expect(referral.getActiveMeetingBonusCount()).toBe(1);
   });
 
   it('keeps the pending claim when the server is unreachable', async () => {

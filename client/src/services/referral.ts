@@ -128,45 +128,55 @@ export function getReferralShareUrl(code: string): string {
   return `${window.location.origin}/?ref=${encodeURIComponent(code)}`;
 }
 
+function makeLocalBenefit(code: string, benefit: ReferralBenefitType): ReferralBenefit {
+  return {
+    id: `${code}-${Date.now()}`,
+    code,
+    benefit,
+    claimedAt: new Date().toISOString(),
+    expiresAt:
+      benefit === 'free_month'
+        ? null
+        : new Date(Date.now() + MEETING_BONUS_MONTHS * 30 * 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
 export async function claimReferralCode(code: string): Promise<ReferralBenefit | null> {
   await loadReferrals();
   const normalized = code.trim().toUpperCase();
   if (!isReferralCodeValid(normalized) || claimedCache.includes(normalized)) return null;
 
-  if (auth.currentUser) {
-    const ownCode = await getOrCreateReferralCode(auth.currentUser.uid);
-    if (normalized === ownCode) return null;
-  }
-
-  const benefit: ReferralBenefit = {
-    id: `${normalized}-${Date.now()}`,
-    code: normalized,
-    benefit: 'meeting_bonus',
-    claimedAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + MEETING_BONUS_MONTHS * 30 * 24 * 60 * 60 * 1000).toISOString(),
-  };
-
-  claimedCache.push(normalized);
-  benefitsCache.push(benefit);
-  await Promise.all([persistClaimed(), persistBenefits()]);
-  trackEvent('referral_claimed');
-
-  if (auth.currentUser) {
-    try {
-      const res = await apiClient.post<{ claimStatus: string; benefit: ReferralBenefitType }>('/referrals/claim', { code: normalized });
-      if (res.claimStatus === 'claimed' && res.benefit === 'free_month') {
-        benefit.benefit = 'free_month';
-        benefit.expiresAt = null;
-        await persistBenefits();
-      }
-    } catch {
-      await writeSetting(PENDING_KEY, normalized);
-    }
-  } else {
+  // Server is the source of truth for benefits: only grant locally after the
+  // server confirms the claim. Granting first (and keeping it on server
+  // failure/offline/IndexedDB wipe) inflates limits client-side and lets
+  // unconfirmed codes masquerade as benefits.
+  if (!auth.currentUser) {
     await writeSetting(PENDING_KEY, normalized);
+    return null;
   }
 
-  return benefit;
+  const ownCode = await getOrCreateReferralCode(auth.currentUser.uid);
+  if (normalized === ownCode) return null;
+
+  try {
+    const res = await apiClient.post<{ claimStatus: string; benefit: ReferralBenefitType }>('/referrals/claim', { code: normalized });
+    if (res.claimStatus !== 'claimed') {
+      if (res.claimStatus === 'already_claimed') {
+        claimedCache.push(normalized);
+        await persistClaimed();
+      }
+      return null;
+    }
+    const benefit = makeLocalBenefit(normalized, res.benefit === 'free_month' ? 'free_month' : 'meeting_bonus');
+    claimedCache.push(normalized);
+    benefitsCache.push(benefit);
+    await Promise.all([persistClaimed(), persistBenefits()]);
+    trackEvent('referral_claimed');
+    return benefit;
+  } catch {
+    await writeSetting(PENDING_KEY, normalized);
+    return null;
+  }
 }
 
 export async function retryPendingReferral(): Promise<void> {
@@ -176,14 +186,27 @@ export async function retryPendingReferral(): Promise<void> {
   if (!pending) return;
   try {
     const res = await apiClient.post<{ claimStatus: string; benefit: ReferralBenefitType }>('/referrals/claim', { code: pending });
+    // Server-confirmed only: materialize the local benefit on 'claimed' (and
+    // record already-claimed codes so they aren't retried/granted again).
     if (res.claimStatus === 'claimed') {
-      const benefit = benefitsCache.find((b) => b.code === pending);
-      if (benefit && res.benefit === 'free_month') {
-        benefit.benefit = 'free_month';
-        benefit.expiresAt = null;
+      if (!claimedCache.includes(pending)) {
+        claimedCache.push(pending);
+        await persistClaimed();
+      }
+      if (!benefitsCache.some((b) => b.code === pending)) {
+        benefitsCache.push(makeLocalBenefit(pending, res.benefit === 'free_month' ? 'free_month' : 'meeting_bonus'));
         await persistBenefits();
+        trackEvent('referral_claimed');
+      }
+    } else if (res.claimStatus === 'already_claimed') {
+      if (!claimedCache.includes(pending)) {
+        claimedCache.push(pending);
+        await persistClaimed();
       }
     }
+    // Terminal statuses (invalid_code/self_referral/limit_reached) clear the
+    // queue too — retrying cannot change the outcome. Only network errors
+    // (catch above) keep the pending code.
   } catch {
     return;
   }

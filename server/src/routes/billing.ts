@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { validateRequest } from '../middleware/validateRequest.js';
 import { AppError } from '../middleware/errorHandler.js';
 import log from '../utils/logger.js';
-import { getFreeMonthsCredit, getMyClaims } from '../services/referral-service.js';
+import { FREE_MONTH_EXPIRY_DAYS, getFreeMonthsCredit, getMyClaims } from '../services/referral-service.js';
 
 const router = express.Router();
 
@@ -187,14 +187,18 @@ router.post('/verify', verifyAuth, validateRequest({ body: verifySchema }), asyn
     }
 
     // One-time purchase: grant a fixed 30-day window so renewal is required.
-    // Referral free_month credit: when credit>0, extend by +30d and consume one credit.
+    // Referral free_month credit: when credit>0, extend by +30d and consume one
+    // credit. Only fresh (unexpired) credits are consumable — consuming an
+    // expired one would grant value from a dead credit.
     let currentPeriodEnd = oneTimePeriodEnd();
     let freeMonthApplied = false;
     try {
       const credit = await getFreeMonthsCredit(userId);
       if (credit > 0) {
         const claims = await getMyClaims(userId);
-        const freeClaim = claims.find((c) => c.benefit === 'free_month');
+        const FREE_MONTH_MS = FREE_MONTH_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+        const cutoff = Date.now() - FREE_MONTH_MS;
+        const freeClaim = claims.find((c) => c.benefit === 'free_month' && new Date(c.claimedAt).getTime() > cutoff);
         if (freeClaim) {
           currentPeriodEnd = oneTimePeriodEnd(currentPeriodEnd);
           try {
