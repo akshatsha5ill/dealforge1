@@ -91,29 +91,12 @@ class DripCampaignWorker {
       return;
     }
 
-    // Suppression-list gate: mirror of server suppression-service check() — must run before send.
-    // NOTE: the server bundle (firebase-admin) can never be imported into the
-    // browser build, so this dynamic import always fails here by design. It is
-    // kept as defense-in-depth for non-browser runtimes; the ENFORCING check
-    // is server-side checkStrict() in POST /email/send (410 suppressed, 503 on
-    // outage). Do not treat a resolved import as the compliance boundary.
-    try {
-      const mod = await import(/* @vite-ignore */ '../../../server/src/services/suppression-service');
-      const check = (mod as unknown as { check?: (email: string) => Promise<boolean> })?.check;
-      if (typeof check === 'function' && (await check(lead.email))) {
-        await db.drip_campaigns.update(campaign.id, {
-          status: 'suppressed',
-          error: 'Skipped: email is on suppression list (bounce/complaint/unsubscribe/stop-on-reply/manual)',
-          nextRunAt: null,
-        });
-        return;
-      }
-    } catch (suppressionCheckErr) {
-      // Expected in the browser: server suppression-service is not bundleable.
-      // Consent/unsubscribed gates above already fail-closed; the server-side
-      // send path still enforces the authoritative suppression list.
-      console.warn('Drip worker client-side suppression check unavailable, relying on server enforcement', suppressionCheckErr);
-    }
+    // Suppression-list gate: mirror of the server suppression-service check().
+    // The authoritative check is server-side checkStrict() in POST /email/send
+    // (410 suppressed, 503 on outage), so the browser worker intentionally
+    // performs NO import of server code here — importing server modules would
+    // drag firebase-admin into the browser bundle and break `vite build`.
+    // Consent/unsubscribed gates above already fail-closed.
 
     // Daily quota: bound total sends per UTC day across all campaigns/tabs.
     const sentToday = await getTodaySentCount(now);
