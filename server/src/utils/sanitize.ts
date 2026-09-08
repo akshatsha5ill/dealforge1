@@ -1,9 +1,13 @@
-import { FilterXSS, type IFilterXSSOptions } from 'xss';
+import { FilterXSS } from 'xss';
 
 const myXss = new FilterXSS({
   whiteList: {}, // empty, means filter out all tags
   stripIgnoreTag: true,
-  stripIgnoreTagBody: ['script'] // the script tag is a special case, we need to filter out its content
+  // Strip the bodies of tags whose text content is executable or loadable.
+  // `script` content must go; `style`/`iframe`/`object`/`embed` bodies are
+  // inert once their tags are stripped, but dropping them too avoids leaking
+  // CSS/URL text into stored fields.
+  stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed']
 });
 
 export const sanitizeObject = <T>(obj: T): T => {

@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { Calendar, Zap, Mail, ChevronDown } from 'lucide-react';
 import { useStore } from '../store';
 import { loginWithGoogle, loginWithEmail, registerWithEmail } from '../services/firebase/auth';
+import { APP_VERSION } from '../version';
 import GoogleIcon from '../components/GoogleIcon';
 
 function NavDropdown({ label, items }: { label: string; items: { label: string; to: string }[] }) {
@@ -237,7 +238,7 @@ export default function LandingPage() {
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', paddingBottom: '16px', borderBottom: '1px solid var(--border)', marginBottom: '28px' }}>
                 <span className="label-text" style={{ color: 'var(--primary)' }}>Currently Operating</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>v3.0.4 · local-first</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--text-muted)' }}>v{APP_VERSION} · local-first</span>
               </div>
               
               <h1 className="display-text" style={{ fontSize: 'clamp(46px, 7.4vw, 92px)', lineHeight: 0.94, marginBottom: '32px' }}>
@@ -324,7 +325,7 @@ export default function LandingPage() {
           </div>
           
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: '18px', display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-            <span className="label-text">DealForge · v3.0.4</span>
+            <span className="label-text">DealForge · v{APP_VERSION}</span>
             <span style={{ fontFamily: 'var(--font-display)', fontStyle: 'italic', fontSize: '14px', color: 'var(--primary)' }}>— an industrial tool —</span>
             <span className="label-text">© 2026 DealForge</span>
           </div>

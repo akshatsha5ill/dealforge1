@@ -1,10 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Send, Sparkles, FileText, Plus, Trash2 } from 'lucide-react';
 import { RichTextEditor } from '../common/RichTextEditor';
 import { Lead, EmailSequenceStep } from '../../types';
 import { IntegrationInfo } from '../../services/email-integration';
 import { useStore } from '../../store';
 import { leadsDB } from '../../services/local-db/leads';
+import { toast } from '../common/Toast';
 import './Email.css';
 
 interface EmailForm {
@@ -64,7 +65,11 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
   const connectedProviders = integrations.filter((i) => i.connected).map((i) => i.provider);
   const isDrip = form.type === 'drip_campaign';
   const selectedLead = leads.find((l) => l.id === form.leadId);
-  const isOptedIn = (selectedLead?.consentStatus || '').trim().toLowerCase() === 'opted_in';
+  // Local override map — never mutate the `leads` prop (parent-owned state
+  // won't re-render on mutation). Falls back to the stored consent status.
+  const [consentOverride, setConsentOverride] = useState<Record<string, string>>({});
+  const storedConsent = (selectedLead?.consentStatus || '').trim().toLowerCase();
+  const isOptedIn = (consentOverride[form.leadId] ?? storedConsent) === 'opted_in';
   const anthropicKey = useStore((s) => s.anthropicKey);
   const geminiKey = useStore((s) => s.geminiKey);
   const hasAiKey = !!(openAiKey || anthropicKey || geminiKey);
@@ -177,10 +182,16 @@ export const ComposeEmailCard: React.FC<ComposeEmailProps> = ({
             onChange={(e) => {
               const next = e.target.checked ? 'opted_in' : 'opted_out';
               if (form.leadId) {
-                void leadsDB.setConsentStatus(form.leadId, next, { source: 'compose-card' }).catch(() => {});
-                // Optimistic local update so the gate state is visible immediately.
-                const lead = leads.find((l) => l.id === form.leadId);
-                if (lead) lead.consentStatus = next;
+                const leadId = form.leadId;
+                setConsentOverride((prev) => ({ ...prev, [leadId]: next }));
+                void leadsDB.setConsentStatus(leadId, next, { source: 'compose-card' }).catch(() => {
+                  toast.error('Could not save consent status.');
+                  setConsentOverride((prev) => {
+                    const copy = { ...prev };
+                    delete copy[leadId];
+                    return copy;
+                  });
+                });
               }
             }}
             style={{ marginTop: '2px' }}

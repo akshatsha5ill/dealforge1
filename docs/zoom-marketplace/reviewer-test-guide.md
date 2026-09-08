@@ -35,7 +35,7 @@ DealForge is an AI meeting-intelligence and sales-CRM app. Testers need a Zoom a
 
 1. From the Zoom App Marketplace, install "DealForge AI" (or use the provided authorization URL).
 2. In the web dashboard, go to **Settings → Integrations → Zoom**.
-3. Click **Connect Zoom** → Zoom OAuth consent screen appears with scopes `meeting:read:admin`, `meeting:write`, `user:read` → Approve.
+3. Click **Connect Zoom** → Zoom OAuth consent screen appears with scopes `meeting:read`, `user:read` (least-privilege; see `zoom-manifest.json`) → Approve.
 4. You are redirected back; Settings shows the Zoom account as **linked**.
 
 ### 3. In-Meeting Panel (Real-Time)

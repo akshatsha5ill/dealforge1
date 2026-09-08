@@ -101,7 +101,7 @@ router.post('/resend', async (req: Request, res: Response, next: NextFunction): 
       }
       if (!verifySvixSignature(rawBody, id, timestamp, signature, secret)) {
         log.warn('Resend webhook signature verification failed', { id });
-        res.status(400).json({ status: 'error', error: 'Invalid webhook signature.' });
+        res.status(401).json({ status: 'error', error: 'Invalid webhook signature.' });
         return;
       }
     } else if (config.isProd) {

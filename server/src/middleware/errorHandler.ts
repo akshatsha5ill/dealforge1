@@ -1,6 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
 import log from '../utils/logger.js';
-import { ZodError } from 'zod';
 
 export class AppError extends Error {
   public statusCode: number;

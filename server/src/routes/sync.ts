@@ -30,7 +30,7 @@ const leadSchema = z.object({
   id: z.string().min(1).max(200),
   meetingId: z.string().min(1).max(200).optional(),
   name: z.string().max(300).optional(),
-  email: z.string().max(300).optional(),
+  email: z.string().max(300).email().optional().or(z.literal('')),
   company: z.string().max(300).optional(),
   role: z.string().max(200).optional(),
   score: z.number().min(0).max(100).optional(),

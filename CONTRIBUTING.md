@@ -14,9 +14,8 @@ Thanks for your interest in contributing! This project is maintained as an open-
 
 ## Checks before opening a PR
 
-- `npm run typecheck --workspace=client`
-- `npm run typecheck --workspace=server`
-- `npm run lint --workspace=client`
+- `npm run typecheck` (both workspaces)
+- `npm run lint` (both workspaces)
 - `npm run test --workspace=client`
 - `npm run test --workspace=server`
 

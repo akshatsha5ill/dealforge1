@@ -135,7 +135,8 @@ export function ApiAccess() {
     setTimeout(() => setCopiedKey(false), 2000);
   };
 
-  const apiBase = `${window.location.origin}/api`;
+  // Split deploys (app ≠ api origin) override this via VITE_API_URL.
+  const apiBase = `${import.meta.env.VITE_API_URL || window.location.origin}/api`;
 
   return (
     <div className="ds-panel" style={{ padding: '28px', gridColumn: '1 / -1' }}>

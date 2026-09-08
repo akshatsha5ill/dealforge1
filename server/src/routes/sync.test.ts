@@ -64,4 +64,17 @@ describe('sync routes', () => {
     const res = await request(createApp('user-1'), '/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meetings: [{ title: 'no id' }] }) });
     expect(res.status).toBe(400);
   });
+
+  it('rejects oversized batches', async () => {
+    const meetings = Array.from({ length: 1001 }, (_, i) => ({ id: `m${i}` }));
+    const res = await request(createApp('user-1'), '/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meetings }) });
+    expect(res.status).toBe(400);
+    expect(syncDerivedData).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed lead emails', async () => {
+    const res = await request(createApp('user-1'), '/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leads: [{ id: 'l1', email: 'not-an-email' }] }) });
+    expect(res.status).toBe(400);
+    expect(syncDerivedData).not.toHaveBeenCalled();
+  });
 });

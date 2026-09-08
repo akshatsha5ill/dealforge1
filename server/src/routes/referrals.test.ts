@@ -16,11 +16,11 @@ vi.mock('../middleware/plan.js', () => ({
   },
 }));
 
-function createApp(uid: string | null) {
+function createApp(uid: string | null, emailVerified = true) {
   const app = express();
   app.use(express.json());
   app.use((req: any, _res: any, next: any) => {
-    if (uid) req.user = { uid, email_verified: true };
+    if (uid) req.user = { uid, email_verified: emailVerified };
     next();
   });
   app.use('/referrals', referralRouter);
@@ -74,6 +74,16 @@ describe('referral routes', () => {
       expect(body.claimStatus).toBe('claimed');
       expect(body.benefit).toBe('meeting_bonus');
       expect(claimReferral).toHaveBeenCalledWith('user-1', 'DF-ABCD2345', 'free');
+    });
+
+    it('returns 403 for unverified email addresses', async () => {
+      const res = await request(createApp('user-1', false), '/referrals/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: 'DF-ABCD2345' }),
+      });
+      expect(res.status).toBe(403);
+      expect(claimReferral).not.toHaveBeenCalled();
     });
   });
 

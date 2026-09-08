@@ -1,5 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,700;1,9..144,400;1,9..144,500;1,9..144,700&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&display=swap');
 
+/* Shared keyframes (single definition — do not re-declare per component). */
+@keyframes rescore-spin { to { transform: rotate(360deg); } }
+.rescore-spinning { transform-origin: center; }
+
 /* ============ Tokens ============ */
 :root {
   --primary: #8a2317;

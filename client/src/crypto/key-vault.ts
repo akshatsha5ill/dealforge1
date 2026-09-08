@@ -47,7 +47,9 @@ const getDerivedKey = async (password: string, salt: Uint8Array): Promise<Crypto
     },
     keyMaterial,
     { name: "AES-GCM", length: 256 },
-    true,
+    // Non-extractable: the raw key must never leave WebCrypto — encrypt and
+    // decrypt are the only permitted operations.
+    false,
     ["encrypt", "decrypt"]
   );
 };

@@ -4,12 +4,12 @@ Every secret DealForge needs, where to get it, and where to paste it.
 **Never commit real values.** Local files (`server/.env`, `client/.env`) are gitignored.
 `sync: false` entries in `render.yaml` make the Render dashboard prompt for them.
 
-## 0. Local files (already created, gitignored)
+## 0. Local files (create once — gitignored, never commit)
 
-| File | State |
+| File | Setup |
 |------|-------|
-| `server/.env` | Created from `.env.example`; `SESSION_SECRET` / `ENCRYPTION_KEY` / `TRACKING_SECRET` pre-generated with 32 random bytes |
-| `client/.env` | Created; `VITE_API_URL` deliberately **commented out** so local dev keeps using the Vite proxy |
+| `server/.env` | Copy from `server/.env.example`; generate fresh `SESSION_SECRET` / `ENCRYPTION_KEY` / `TRACKING_SECRET` (e.g. `openssl rand -hex 32`) |
+| `client/.env` | Copy from `client/.env.example`; keep `VITE_API_URL` **commented out** so local dev keeps using the Vite proxy |
 
 ## 1. Firebase (required — auth is the backbone)
 
@@ -34,7 +34,8 @@ Every secret DealForge needs, where to get it, and where to paste it.
 
 | Credential | Get it from | Set it in |
 |------------|-------------|-----------|
-| `RESEND_API_KEY` (prod-required), `EMAIL_FROM` | Resend dashboard → API keys; verify `noreply@dealforge.app` domain | `server/.env` + Render |
+| `RESEND_API_KEY` (prod-required), `EMAIL_FROM` | Resend dashboard → API keys; verify `support@dealforge.app` domain | `server/.env` + Render |
+| `RESEND_WEBHOOK_SECRET` (required when email webhooks enabled) | Resend dashboard → Webhooks → signing secret (Svix) | `server/.env` + Render |
 | `EMAIL_REPLY_TO`, `EMAIL_COMPANY_NAME`, `EMAIL_PHYSICAL_ADDRESS` | Your own company details (CAN-SPAM footer) | `server/.env` + Render |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google Cloud console → APIs & Services → Credentials (OAuth client); authorize the `OAUTH_REDIRECT_BASE/gmail/callback` URI | `server/.env` + Render |
 | `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` | Azure portal → App registrations; authorize the `.../outlook/callback` URI | `server/.env` + Render |
@@ -53,7 +54,7 @@ Every secret DealForge needs, where to get it, and where to paste it.
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY` (+ `*_MODEL` overrides).
 Server keys are only defaults. Set in `server/.env` + Render if you want server-side fallback.
 
-## 6. Security tokens (generated — already filled in local `server/.env`)
+## 6. Security tokens (generate per environment)
 
 | Credential | Set it in |
 |------------|-----------|

@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { AppError } from './errorHandler.js';
 
 export const validateRequest = (schema: { body?: z.ZodType; query?: z.ZodType; params?: z.ZodType }) =>
-  (req: Request, res: Response, next: NextFunction) => {
+  (req: Request, _res: Response, next: NextFunction) => {
     try {
       if (schema.body) {
         req.body = schema.body.parse(req.body);

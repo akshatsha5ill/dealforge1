@@ -326,6 +326,8 @@ class ZoomRTMSService {
   }
 
   private startHeartbeat(meetingId: string): void {
+    // unref so idle heartbeat timers never keep the process alive on their own
+    // (matches the connection-cleanup interval in the constructor).
     const interval = setInterval(() => {
       if (!this.connections.has(meetingId)) {
         clearInterval(interval);
@@ -344,6 +346,7 @@ class ZoomRTMSService {
         clearInterval(interval);
       }
     }, ZoomRTMSService.HEARTBEAT_INTERVAL_MS);
+    interval.unref();
 
     this.heartbeatIntervals.set(meetingId, interval);
   }

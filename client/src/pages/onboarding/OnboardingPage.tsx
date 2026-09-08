@@ -39,12 +39,18 @@ export default function OnboardingPage() {
         const data = await res.json();
         setZoomStatus({ linked: !!data.linked, zoomUserId: data.zoomUserId || null });
       }
-    } catch { /* server may be unavailable */ }
+    } catch (err) {
+      // Zoom status is best-effort here (self-hosted server may be unreachable
+      // during onboarding) — visible in devtools, not a blocking error.
+      console.warn('Zoom status check failed:', err);
+    }
 
     try {
       const res = await getEmailIntegrationStatus();
       setIntegrations(res.integrations.filter((i) => i.connected).map((i) => i.provider));
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.warn('Email integration status check failed:', err);
+    }
 
     const stored = await db.settings.get('dealforge_encrypted_keys');
     setHasOpenAiKey(!!stored && !!stored.value && !!(stored.value as Record<string, EncryptedKey>).openAi);

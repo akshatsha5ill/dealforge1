@@ -17,18 +17,24 @@ export default function AnalyticsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [emails, setEmails] = useState<EmailCampaign[]>([]);
+  const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     const fetchData = async () => {
-      const [allMeetings, allLeads, allDeals, allEmails] = await Promise.all([
-        db.meetings.toArray(),
-        db.leads.toArray(),
-        db.deals.toArray(),
-        db.email_campaigns.toArray(),
-      ]);
-      setMeetings(allMeetings);
-      setLeads(allLeads);
-      setDeals(allDeals);
-      setEmails(allEmails);
+      try {
+        const [allMeetings, allLeads, allDeals, allEmails] = await Promise.all([
+          db.meetings.toArray(),
+          db.leads.toArray(),
+          db.deals.toArray(),
+          db.email_campaigns.toArray(),
+        ]);
+        setMeetings(allMeetings);
+        setLeads(allLeads);
+        setDeals(allDeals);
+        setEmails(allEmails);
+      } catch {
+        // IndexedDB unavailable — render the empty state instead of crashing.
+        setLoadError(true);
+      }
     };
     fetchData();
   }, []);
@@ -84,7 +90,9 @@ export default function AnalyticsPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '30px' }}>
         <div>
           <h1 style={{ fontSize: '28px', fontWeight: 700, marginBottom: '4px' }}>Analytics</h1>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Track performance and lead engagement.</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+            {loadError ? 'Local data is unavailable — charts show empty state.' : 'Track performance and lead engagement.'}
+          </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           {TIME_FILTERS.map(({ label, days }) => (

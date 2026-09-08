@@ -24,6 +24,7 @@ describe('Toast', () => {
     });
 
     expect(screen.getByText('Operation completed!')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
   it('shows error toast', () => {

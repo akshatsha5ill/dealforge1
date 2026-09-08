@@ -1,9 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import requestId from './requestId.js';
 
-vi.spyOn(crypto, 'randomUUID');
+const randomUUIDSpy = vi.spyOn(crypto, 'randomUUID');
+
+afterAll(() => {
+  randomUUIDSpy.mockRestore();
+});
 
 describe('requestId middleware', () => {
   let req: { headers: Record<string, string>; requestId?: string };
@@ -41,6 +45,25 @@ describe('requestId middleware', () => {
     requestId(req as unknown as Request, res as unknown as Response, next as unknown as NextFunction);
 
     expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', 'my-request-id');
+  });
+
+  it('rejects X-Request-Id values with unsafe characters', () => {
+    req.headers['x-request-id'] = 'evil\nlog-injection <script>';
+
+    requestId(req as unknown as Request, res as unknown as Response, next as unknown as NextFunction);
+
+    expect(crypto.randomUUID).toHaveBeenCalled();
+    expect(req.requestId).toBe('mock-uuid-1234');
+    expect(res.setHeader).toHaveBeenCalledWith('X-Request-Id', 'mock-uuid-1234');
+  });
+
+  it('rejects overlong X-Request-Id values', () => {
+    req.headers['x-request-id'] = 'a'.repeat(65);
+
+    requestId(req as unknown as Request, res as unknown as Response, next as unknown as NextFunction);
+
+    expect(crypto.randomUUID).toHaveBeenCalled();
+    expect(req.requestId).toBe('mock-uuid-1234');
   });
 
   it('calls next() to pass control to the next middleware', () => {

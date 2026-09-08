@@ -187,9 +187,8 @@ export default function LeadsPage() {
                     style={{ background: 'none', border: 'none', cursor: loadingRescore[lead.id] ? 'not-allowed' : 'pointer', color: 'var(--text-muted)', padding: '4px' }}
                     title="Re-score lead with AI"
                   >
-                    <RefreshCw size={14} style={{ animation: loadingRescore[lead.id] ? 'spin 1s linear infinite' : 'none' }} />
+                    <RefreshCw size={14} className={loadingRescore[lead.id] ? 'rescore-spinning' : undefined} style={{ animation: loadingRescore[lead.id] ? 'rescore-spin 1s linear infinite' : 'none' }} />
                   </button>
-                  <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
                 </div>
               </div>
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '12px' }}>{lead.email}</p>

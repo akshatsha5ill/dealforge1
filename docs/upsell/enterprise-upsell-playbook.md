@@ -75,7 +75,7 @@ Teams that switch to Enterprise typically see the same pattern:
 - Meetings get better — reps learn from each other's win/loss calls via team analytics
 - Managers stop asking "where is this deal?" — the pipeline answers it
 
-One Pro customer put it simply: *"It was like watching the lights come on for the whole team at once."*
+One Pro customer put it simply: *"It was like watching the lights come on for the whole team at once."* _(Illustrative sample copy — replace with a real, permissioned testimonial before publishing.)_
 
 Ready to see it for your team? [Start your Enterprise trial →]
 
@@ -86,7 +86,7 @@ Ready to see it for your team? [Start your Enterprise trial →]
 - **Trial**: Enterprise is $79/mo — offer a 14-day free trial for the team to see the shared pipeline before paying. This removes the biggest purchase blocker (unknown fit).
 - **Seat math**: always anchor on per-seat price, not the total. $59/seat/month beats "$295/mo" emotionally.
 - **Renewal hook**: the team discount is a lock-in — once a team shares a pipeline, churn becomes near-zero because switching costs multiply by team size.
-- **Measurement**: track Enterprise page views, trial starts, and MRR from teams. Goal: 25+ paid users by month 9 (plan projection).
+- **Measurement**: track Enterprise page views, trial starts, and MRR from teams. Goal: 25+ paid users by month 9 (internal plan projection — not a public commitment).
 
 ## Pricing Card Copy (BillingPage)
 

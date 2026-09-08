@@ -277,6 +277,16 @@
         }
       }
     },
+    "/zoom/oauth/start": {
+      "post": {
+        "summary": "Start Zoom OAuth flow",
+        "security": [{ "BearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Authorization URL issued" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
     "/zoom/oauth/callback": {
       "get": {
         "summary": "Zoom OAuth callback",
@@ -424,7 +434,7 @@
                   "transcript": { "type": "string" },
                   "meetingId": { "type": "string" },
                   "apiKey": { "type": "string" },
-                  "model": { "type": "string", "enum": ["openai", "anthropic"] }
+                  "model": { "type": "string", "enum": ["openai", "anthropic", "gemini"] }
                 }
               }
             }
@@ -553,7 +563,7 @@
                     }
                   },
                   "apiKey": { "type": "string" },
-                  "model": { "type": "string", "enum": ["openai", "anthropic"] }
+                  "model": { "type": "string", "enum": ["openai", "anthropic", "gemini"] }
                 }
               }
             }
@@ -571,10 +581,34 @@
         }
       }
     },
-    "/email/oauth/{provider}": {
-      "get": {
-        "summary": "Email OAuth redirect (simulated)",
+    "/email/oauth/start": {
+      "post": {
+        "summary": "Start Gmail/Outlook OAuth flow",
         "security": [{ "BearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["provider"],
+                "properties": {
+                  "provider": { "type": "string", "enum": ["gmail", "outlook"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Authorization URL issued" },
+          "400": { "description": "Invalid input" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/email/oauth/{provider}/callback": {
+      "get": {
+        "summary": "Email OAuth provider callback",
         "parameters": [
           {
             "name": "provider",
@@ -584,14 +618,21 @@
             "description": "Email provider"
           },
           {
-            "name": "redirect",
+            "name": "code",
             "in": "query",
             "schema": { "type": "string" },
-            "description": "Redirect URL after OAuth"
+            "description": "OAuth authorization code"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "OAuth state token"
           }
         ],
         "responses": {
-          "302": { "description": "Redirect to callback URL with OAuth params" }
+          "302": { "description": "Redirect back to the app" },
+          "400": { "description": "Invalid callback" }
         }
       }
     },
@@ -702,6 +743,34 @@
             }
           },
           "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/billing/webhook": {
+      "post": {
+        "summary": "Dodo Payments webhook (HMAC-verified, no Firebase auth)",
+        "description": "Public endpoint. Authenticity is verified inside the handler via the Dodo webhook signature over the raw body.",
+        "responses": {
+          "200": { "description": "Event processed (idempotent)" },
+          "400": { "description": "Invalid signature or payload" }
+        }
+      }
+    },
+    "/email/webhooks/resend": {
+      "post": {
+        "summary": "Resend event webhook (Svix-verified)",
+        "description": "Public endpoint. Svix signature is verified when RESEND_WEBHOOK_SECRET is set; verification is skipped outside production and fails closed in production.",
+        "responses": {
+          "200": { "description": "Event recorded" },
+          "400": { "description": "Invalid signature or payload" }
+        }
+      }
+    },
+    "/zoomverify/verifyzoom.html": {
+      "get": {
+        "summary": "Zoom domain-verification token",
+        "responses": {
+          "200": { "description": "Verification token (or not-configured placeholder)" }
         }
       }
     },

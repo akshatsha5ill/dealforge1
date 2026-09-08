@@ -44,9 +44,12 @@ export default function BillingPage() {
       return data;
     } catch (err) {
       console.error('Failed to fetch subscription:', err);
+      // Mirror subscriptionSlice: never keep a possibly-stale paid plan when
+      // the server can't confirm it. Server remains the authority.
+      setSubscription(null);
       return null;
     }
-  }, [updateSubscription]);
+  }, [updateSubscription, setSubscription]);
 
   const refreshSubscription = async () => {
     setRefreshing(true);
@@ -76,9 +79,14 @@ export default function BillingPage() {
     let attempts = 0;
     const maxAttempts = 10;
     let verified = false;
+    let inFlight = false;
 
     const poll = setInterval(async () => {
-      attempts++;
+      // Guard against overlapping ticks on slow networks.
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        attempts++;
 
       if (!verified) {
         try {
@@ -119,6 +127,9 @@ export default function BillingPage() {
         setLoading(false);
         toast.info('Payment is still being processed. Please check back later.');
         window.history.replaceState({}, '', '/dashboard/billing');
+      }
+      } finally {
+        inFlight = false;
       }
     }, 3000);
 

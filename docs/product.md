@@ -16,7 +16,7 @@ To streamline the sales workflow by automating CRM entry and lead follow-up dire
 Acts as a seamless assistant during and after Zoom meetings, bridging live call data (transcripts, notes) with automated downstream actions (drip campaigns, lead updates).
 
 ## Operating Context
-Used during live Zoom meetings via a side-panel for real-time transcription and suggestions, and accessed via a web dashboard for pipeline management, settings, and analytics. It stores data locally and relies on weekly file-system backups.
+Used during live Zoom meetings via a side-panel for real-time transcription and suggestions, and accessed via a web dashboard for pipeline management, settings, and analytics. Meeting data is stored locally (IndexedDB) with optional user-approved directory backups for portability.
 
 ## Capabilities and Constraints
 - Real-time Zoom transcription, suggestions, and notes.
@@ -25,10 +25,10 @@ Used during live Zoom meetings via a side-panel for real-time transcription and 
 - Full creative freedom for the visual design; no legacy brand assets are binding.
 
 ## Brand Commitments
-The visual language must strictly adhere to the `DESIGN.md` brief: "The Industrial Journal," featuring Fraunces and Newsreader serif typography, warm parchment backgrounds, oxblood accents, structural 1px rules, and a tactile paper-grain aesthetic.
+The visual language must strictly adhere to the `docs/design.md` brief: "The Industrial Journal," featuring Fraunces and Newsreader serif typography, warm parchment backgrounds, oxblood accents, structural 1px rules, and a tactile paper-grain aesthetic.
 
 ## Evidence on Hand
-Codebase evidence indicates a functional dashboard and Zoom panel structure. The visual design is governed entirely by the updated `DESIGN.md`.
+Codebase evidence indicates a functional dashboard and Zoom panel structure. The visual design is governed entirely by the updated `docs/design.md`.
 
 ## Product Principles
 - **Invisible Administration**: The system should do the heavy lifting of CRM entry so the rep doesn't have to.

@@ -41,7 +41,7 @@ Express API (stateless relay) ◀───── HTTPS ──┘
 
 **Why no `meeting:write`:** DealForge never creates/updates meetings via REST. Live transcription uses RTMS authenticated by SDK key/secret (`server/src/services/zoom-rtms.ts:69-75,159-181` — HMAC-signed `wss://rtms2.zoom.us` + `func: auth`), not OAuth `meeting:write`. The only Zoom REST call is `GET /v2/users/me` (`server/src/routes/zoom.ts:235`), which requires only `user:read`. No write operation exists, so `meeting:write` is omitted.
 
-**Note for review**: The manifest previously listed `recording:read` — DealForge does **not** consume cloud recordings; it streams live transcription via RTMS. Do not request `recording:read`. Canonical scopes are `meeting:read` + `user:read` per `zoom-manifest.json`. Known drift (no code change this wave): `server/src/routes/zoom.ts:131` currently requests `meeting:read:admin meeting:write user:read` and `client/src/pages/landing/PrivacyPolicy.tsx:58-63` repeats the admin/write wording — both must be narrowed to `meeting:read` + `user:read` in the code wave to match this doc and the manifest.
+**Note for review**: The manifest previously listed `recording:read` — DealForge does **not** consume cloud recordings; it streams live transcription via RTMS. Do not request `recording:read`. Canonical scopes are `meeting:read` + `user:read` per `zoom-manifest.json`, matching the OAuth request in `server/src/routes/zoom.ts` and the consent description in `client/src/pages/landing/PrivacyPolicy.tsx`.
 
 ## 4. OAuth Token Handling
 
@@ -77,7 +77,7 @@ Express API (stateless relay) ◀───── HTTPS ──┘
 | Rate limiting | Per-route limiters (auth, billing, ai, tracking, email) |
 | Server-side plan enforcement | `requirePlan` + `enforceAiModelAccess` + `enforceAnalysisLimit` middleware |
 | No sensitive data in logs | Structured logger, meeting content never logged |
-| Dependency hygiene | npm audit run in CI; lockfile committed |
+| Dependency hygiene | Lockfile committed; CI runs lint, typecheck, tests, and builds (`.github/workflows/ci.yml`) |
 
 ## 8. Third-Party Services
 

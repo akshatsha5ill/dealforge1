@@ -12,6 +12,7 @@
 - [ ] `npm run typecheck --workspace=client`
 - [ ] `npm run typecheck --workspace=server`
 - [ ] `npm run lint --workspace=client`
+- [ ] `npm run lint --workspace=server`
 - [ ] `npm run test --workspace=client`
 - [ ] `npm run test --workspace=server`
 

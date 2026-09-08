@@ -13,13 +13,17 @@ let toastId = 0;
 let listeners: ((toasts: Toast[]) => void)[] = [];
 let toasts: Toast[] = [];
 
+// Bound bursts (e.g. a failing loop) to a fixed window so the module-level
+// array and re-renders can't grow without limit.
+const MAX_TOASTS = 5;
+
 function notify() {
   listeners.forEach((l) => l([...toasts]));
 }
 
 export function showToast(message: string, type: ToastType = 'info') {
   const id = ++toastId;
-  toasts = [...toasts, { id, message, type }];
+  toasts = [...toasts, { id, message, type }].slice(-MAX_TOASTS);
   notify();
   setTimeout(() => {
     toasts = toasts.filter((t) => t.id !== id);
@@ -64,7 +68,7 @@ export default function ToastContainer() {
   if (items.length === 0) return null;
 
   return (
-    <div className="toast-container">
+    <div className="toast-container" role="alert" aria-live="polite">
       {items.map((t) => {
         const Icon = icons[t.type];
         return (

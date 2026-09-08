@@ -179,7 +179,7 @@ app.get('/api/docs', (req, res) => {
   });
 });
 
-app.get('/zoomverify/verifyzoom.html', (req, res) => {
+app.get('/zoomverify/verifyzoom.html', trackingLimiter, (req, res) => {
   res.setHeader('Content-Type', 'text/html');
   res.send(process.env.ZOOM_VERIFY_TOKEN || 'zoomverify token not configured');
 });

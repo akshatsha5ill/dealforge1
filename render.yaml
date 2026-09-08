@@ -7,6 +7,8 @@ services:
     env: node
     plan: free
     rootDir: server
+    # NOTE: `npm install`, not `npm ci` — rootDir has no lockfile of its own
+    # (the workspace lockfile lives at the repo root).
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
@@ -17,6 +19,10 @@ services:
         value: 3000
       - key: CLIENT_URL
         value: https://app.dealforge.io
+      - key: CLIENT_URLS
+        sync: false
+      - key: API_BASE_URL
+        sync: false
       - key: ZOOM_CLIENT_ID
         sync: false
       - key: ZOOM_CLIENT_SECRET
@@ -43,8 +49,16 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      - key: RESEND_WEBHOOK_SECRET
+        sync: false
       - key: EMAIL_FROM
         value: DealForge <support@dealforge.app>
+      - key: EMAIL_REPLY_TO
+        sync: false
+      - key: EMAIL_COMPANY_NAME
+        sync: false
+      - key: EMAIL_PHYSICAL_ADDRESS
+        sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
@@ -62,6 +76,12 @@ services:
       - key: FIREBASE_CLIENT_EMAIL
         sync: false
       - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false
       - key: DODO_PAYMENTS_API_KEY
         sync: false

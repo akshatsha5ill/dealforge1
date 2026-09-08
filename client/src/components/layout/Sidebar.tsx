@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { Home, Video, Users, Settings, BarChart3, Mail, GitBranch, CreditCard, Lock } from 'lucide-react';
 import { useStore } from '../../store';
 import { canUseFeature } from '../../services/feature-gate';
+import { APP_VERSION } from '../../version';
 import './Sidebar.css';
 
 const navItems = [
@@ -56,7 +57,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="sidebar-footer">
-        v3.0.4
+        v{APP_VERSION}
       </div>
     </div>
   );

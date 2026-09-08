@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { AppError } from '../middleware/errorHandler.js';
 
 process.env.ENCRYPTION_KEY = 'test-encryption-key';
@@ -6,6 +6,21 @@ process.env.GOOGLE_CLIENT_ID = 'google-id';
 process.env.GOOGLE_CLIENT_SECRET = 'google-secret';
 process.env.MICROSOFT_CLIENT_ID = 'ms-id';
 process.env.MICROSOFT_CLIENT_SECRET = 'ms-secret';
+
+// Snapshot so the mutations above never leak into other test files running
+// in the same process (vitest workers are reused across files).
+const TEST_ENV_KEYS = [
+  'ENCRYPTION_KEY',
+  'GOOGLE_CLIENT_ID',
+  'GOOGLE_CLIENT_SECRET',
+  'MICROSOFT_CLIENT_ID',
+  'MICROSOFT_CLIENT_SECRET',
+] as const;
+const savedEnv: Partial<Record<(typeof TEST_ENV_KEYS)[number], string>> = {};
+for (const key of TEST_ENV_KEYS) {
+  const prior = process.env[key];
+  if (prior !== undefined) savedEnv[key] = prior;
+}
 
 vi.mock('../services/firebase-admin.js', () => {
   const docRefs = new Map<string, any>();
@@ -77,6 +92,13 @@ describe('email-oauth service', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  afterAll(() => {
+    for (const key of TEST_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key] as string;
+    }
   });
 
   describe('buildOAuthStartUrl', () => {

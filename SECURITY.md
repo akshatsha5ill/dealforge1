@@ -21,3 +21,14 @@ You should receive an initial response within 72 hours.
 - Never commit `.env` files, API keys, or service-account credentials.
 - Use `server/.env.example` and `client/.env.example` as placeholders only.
 - Webhooks verify HMAC signatures; API keys are hashed and never logged.
+
+## Trust model
+
+- The server is the authority for plans, quotas, and billing. Client-side
+  gates (`client/src/services/feature-gate.ts`, the Zustand subscription
+  cache, referral bonuses) are UX conveniences only and are bypassable by
+  design — every paid feature is re-checked server-side (`verifyAuth`,
+  `requirePlan`, `enforceAnalysisLimit`).
+- Meeting content is local-first (IndexedDB). The server holds a 24h
+  in-memory relay buffer only; BYOK provider calls go directly from the
+  browser to the AI provider over HTTPS.

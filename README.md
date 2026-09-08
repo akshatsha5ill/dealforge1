@@ -92,13 +92,16 @@ npm run dev:server   # Express server on port 3000
 npm run test         # Run all tests
 npm run test:client  # Client tests only
 npm run test:server  # Server tests only
-npm run lint         # Lint client code
+npm run typecheck    # Typecheck both workspaces
+npm run lint         # Lint both workspaces
 ```
 
 ### Build
 
 ```bash
-npm run build        # Build client for production
+npm run build          # Build server + client
+npm run build:client   # Build client for production
+npm run build:server   # Build server
 ```
 
 ## Project Structure

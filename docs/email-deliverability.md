@@ -1,9 +1,8 @@
 # Email Deliverability (Resend — SPF / DKIM / DMARC)
 
-Repo state verified:
+Repo state:
 - `EMAIL_FROM` default is `DealForge <support@dealforge.app>` (`server/src/config.ts:29`, `server/.env.example:32`).
-- `render.yaml` sets `RESEND_API_KEY` (secret) and `healthCheckPath: /api/health`, but defines **no** `EMAIL_FROM` / tracking env vars.
-- No existing SPF/DKIM/DMARC guide (`docs/` only contains `blog/`, `upsell/`, `zoom-marketplace/`).
+- `render.yaml` sets `RESEND_API_KEY` (secret), `EMAIL_FROM`, and `healthCheckPath: /api/health`; set `TRACKING_SECRET` / `TRACKING_BASE_URL` / `RESEND_WEBHOOK_SECRET` alongside them.
 
 If you send from `noreply@dealforge.app` (or any custom domain) via Resend without DNS auth, expect spam-foldering or bounces under Gmail bulk-sender rules. Do the steps below once per sending domain.
 
@@ -32,7 +31,7 @@ Resend domain status must show **Verified** before sending production mail from 
 
 ## 2. Set `EMAIL_FROM` + `TRACKING_BASE_URL`
 
-`server/src/routes/email.ts:26` resolves click/open tracking URLs as:
+`server/src/routes/email.ts` resolves click/open tracking URLs as (`getTrackingBaseUrl`):
 
 - `TRACKING_BASE_URL` (trimmed, trailing `/` stripped) when set — **preferred**;
 - otherwise `req` host fallback: `{protocol}://{host}/api/tracking` (breaks behind proxies / leaks internal hosts).
@@ -42,23 +41,24 @@ Uids in tracking URLs are HMAC-signed with `TRACKING_SECRET || SESSION_SECRET` (
 Set in Render (`dealforge-server` → Environment) and local `.env`:
 
 ```bash
-EMAIL_FROM=DealForge <noreply@dealforge.app>
-# Canonical public tracking base — must be HTTPS in prod:
-TRACKING_BASE_URL=https://dealforge-server.onrender.com/api/tracking
+EMAIL_FROM=DealForge <support@dealforge.app>
+# Canonical public tracking base — must be HTTPS in prod (use your own
+# registered host, not a provider default subdomain):
+TRACKING_BASE_URL=https://<api-host>/api/tracking
 # Optional: dedicated signing secret (else SESSION_SECRET is used):
 TRACKING_SECRET=change-me-to-a-long-random-string
 ```
 
 Notes:
 - `TRACKING_BASE_URL` must be on the same registered domain family as your sending domain where possible, and must be publicly reachable (the open pixel + click wrapper live under `/open/:campaignId` and `/click/:campaignId`).
-- Bulk sends require a replyable `Reply-To` (see `server/src/services/email-service.ts` — `assertBulkSender` rejects noreply bulk senders). Set `EMAIL_REPLY_TO=support@dealforge.app` if `EMAIL_FROM` stays noreply.
+- Bulk sends require a replyable `Reply-To` (see `server/src/services/email-service.ts` — `assertBulkSender` rejects noreply bulk senders). `EMAIL_REPLY_TO=support@dealforge.app` is a safe default.
 
 ## 3. Health check (post-deploy + deliverability smoke test)
 
-Health endpoint (`server/src/app.ts:213`, `render.yaml:12`, `server/Dockerfile:26`):
+Health endpoint (`server/src/app.ts` `/api/health`, `render.yaml` `healthCheckPath`, `server/Dockerfile` `HEALTHCHECK`):
 
 ```bash
-curl -fsS https://dealforge-server.onrender.com/api/health
+curl -fsS https://<api-host>/api/health
 # → {"status":"healthy","uptime":...}  (HTTP 200)
 ```
 

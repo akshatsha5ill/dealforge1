@@ -1,4 +1,5 @@
 import { Component, ReactNode } from 'react';
+import * as Sentry from '@sentry/react';
 import './ErrorBoundary.css';
 
 interface ErrorBoundaryProps {
@@ -17,6 +18,15 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    // Report to Sentry when configured; the boundary itself stays dependency-free.
+    try {
+      Sentry.captureException(error);
+    } catch {
+      // Sentry not initialized — the fallback UI below is the report.
+    }
   }
 
   render() {

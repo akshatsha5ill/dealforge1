@@ -40,26 +40,26 @@ export const apiClient = {
     });
     return handleResponse<T>(response);
   },
-  put: async <T = Record<string, unknown>>(endpoint: string, data: Record<string, unknown>): Promise<T> => {
+  put: async <T = Record<string, unknown>>(endpoint: string, data: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<T> => {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
       method: 'PUT',
-      headers: await getHeaders(),
+      headers: { ...(await getHeaders()), ...(extraHeaders || {}) },
       body: JSON.stringify(data),
     });
     return handleResponse<T>(response);
   },
-  patch: async <T = Record<string, unknown>>(endpoint: string, data: Record<string, unknown>): Promise<T> => {
+  patch: async <T = Record<string, unknown>>(endpoint: string, data: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<T> => {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
       method: 'PATCH',
-      headers: await getHeaders(),
+      headers: { ...(await getHeaders()), ...(extraHeaders || {}) },
       body: JSON.stringify(data),
     });
     return handleResponse<T>(response);
   },
-  delete: async <T = Record<string, unknown>>(endpoint: string): Promise<T> => {
+  delete: async <T = Record<string, unknown>>(endpoint: string, extraHeaders?: Record<string, string>): Promise<T> => {
     const response = await fetch(`${BASE_URL}${endpoint}`, {
       method: 'DELETE',
-      headers: await getHeaders(),
+      headers: { ...(await getHeaders()), ...(extraHeaders || {}) },
     });
     return handleResponse<T>(response);
   },

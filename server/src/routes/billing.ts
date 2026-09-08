@@ -254,6 +254,9 @@ router.post('/verify', verifyAuth, validateRequest({ body: verifySchema }), asyn
     if (err instanceof AppError) {
       return next(err);
     }
+    // Intentional: transient Dodo API failures surface as `pending` (HTTP 200)
+    // so the client keeps polling instead of showing a payment error for a
+    // charge that may still confirm via webhook. Logged server-side.
     log.error('Verify session failed', { error: err, userId, sessionId: session_id });
     return res.status(200).json({ status: 'pending', plan: 'free' });
   }
