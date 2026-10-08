@@ -1,9 +1,71 @@
 import crypto from 'crypto';
 import { Resend } from 'resend';
+import { FilterXSS } from 'xss';
 import { config } from '../config.js';
 import { AppError } from '../middleware/errorHandler.js';
 import log from '../utils/logger.js';
 import { getTrackingSecret } from '../utils/tracking-secret.js';
+
+// Allowlist sanitizer for outbound email HTML. Inbound bodies arrive as raw
+// HTML (the global sanitize middleware skips /api/email/send) and are
+// click-wrapped + shipped to recipients from our domain — unsanitized input
+// ships stored-XSS (scriptable hrefs, event handlers, svg/form). Sanitize
+// with an email-safe allowlist before the compliance footer / provider send.
+const outboundXss = new FilterXSS({
+  whiteList: {
+    a: ['href', 'title', 'target', 'rel', 'style'],
+    p: ['style'],
+    br: [],
+    hr: [],
+    div: ['style'],
+    span: ['style'],
+    strong: ['style'],
+    b: [],
+    em: ['style'],
+    i: [],
+    u: [],
+    h1: ['style'],
+    h2: ['style'],
+    h3: ['style'],
+    h4: ['style'],
+    h5: ['style'],
+    h6: ['style'],
+    ul: ['style'],
+    ol: ['style'],
+    li: ['style'],
+    table: ['style', 'border', 'cellpadding', 'cellspacing'],
+    thead: [],
+    tbody: [],
+    tr: ['style'],
+    td: ['style', 'colspan', 'rowspan'],
+    th: ['style', 'colspan', 'rowspan'],
+    blockquote: ['style'],
+    pre: ['style'],
+    code: ['style'],
+    img: ['src', 'alt', 'width', 'height', 'style'],
+  },
+  stripIgnoreTag: true,
+  stripIgnoreTagBody: ['script'],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onTagAttr: (tag: string, name: string, value: string): any => {
+    if (/^on/i.test(name)) return '';
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'href' || lowerName === 'src') {
+      const v = String(value).trim();
+      if (/^javascript:/i.test(v) || /^vbscript:/i.test(v) || /^data:(?!image\/)/i.test(v)) return '';
+      if (lowerName === 'href' && !/^(https?:|mailto:|#)/i.test(v) && v !== '') {
+        // Relative URLs are dropped — only absolute http(s)/mailto/anchor survive.
+        if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return '';
+      }
+    }
+    return undefined;
+  },
+});
+
+export function sanitizeOutboundHtml(html: string): string {
+  if (!html || typeof html !== 'string') return '';
+  return outboundXss.process(html);
+}
 
 // ---------------------------------------------------------------------------
 // Bulk / compliance helpers (Gmail bulk-sender guidelines + CAN-SPAM)
@@ -300,9 +362,12 @@ const sendDraft = async (to: string, subject: string, body: string, { apiKey = c
     replyTo: replyToOpt,
   });
 
+  // Allowlist-sanitize outbound HTML before the compliance footer / send
+  // (stored-XSS: raw inbound HTML ships from our domain to recipients).
+  const safeBodyDraft = sanitizeOutboundHtml(body);
   const finalBody = ctx.isBulkSend
-    ? injectComplianceFooter(body, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
-    : body;
+    ? injectComplianceFooter(safeBodyDraft, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
+    : safeBodyDraft;
   const headers = ctx.isBulkSend
     ? buildListUnsubscribeHeaders(ctx.unsubscribeUrl, ctx.mailtoUnsubscribe)
     : undefined;
@@ -349,9 +414,10 @@ const sendViaGmail = async (
     replyTo: replyToOpt,
   });
 
+  const safeBodyGmail = sanitizeOutboundHtml(body);
   const finalBody = ctx.isBulkSend
-    ? injectComplianceFooter(body, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
-    : body;
+    ? injectComplianceFooter(safeBodyGmail, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
+    : safeBodyGmail;
 
   const safeTo = sanitizeEmailAddress(to);
   const safeSubject = sanitizeHeaderValue(subject);
@@ -439,9 +505,10 @@ const sendViaOutlook = async (
     replyTo: provisionalReply,
   });
 
+  const safeBodyOutlook = sanitizeOutboundHtml(body);
   const finalBody = ctx.isBulkSend
-    ? injectComplianceFooter(body, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
-    : body;
+    ? injectComplianceFooter(safeBodyOutlook, { unsubscribeUrl: ctx.unsubscribeUrl, companyName, physicalAddress })
+    : safeBodyOutlook;
 
   const internetMessageHeaders = ctx.isBulkSend
     ? [
@@ -481,6 +548,7 @@ export {
   sendDraft,
   sendViaGmail,
   sendViaOutlook,
+  sanitizeOutboundHtml,
   htmlToText,
   isNoreplyAddress,
   buildUnsubscribeUrl,

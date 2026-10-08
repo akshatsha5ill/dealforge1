@@ -95,6 +95,24 @@ export const publicApiLimiter = rateLimit({
 export const emailWebhookLimiter = rateLimit({
   ...base,
   windowMs: 60 * 1000,
-  max: 60,
+  max: 30,
   message: { error: 'Too many webhook requests' },
+});
+
+// Single-use OAuth callbacks (authorization-code exchange): tight cap so
+// stolen codes cannot be brute-forced and IdP token endpoints are not abused.
+export const oauthCallbackLimiter = rateLimit({
+  ...base,
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: 'Too many OAuth requests, please try again later.' },
+});
+
+// Public one-click unsubscribe (no auth by design): bound so it cannot be
+// used for mass-suppression probing or token brute force.
+export const unsubscribeLimiter = rateLimit({
+  ...base,
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'Too many unsubscribe requests' },
 });

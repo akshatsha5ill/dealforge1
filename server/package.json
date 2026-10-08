@@ -23,7 +23,7 @@
     "cors": "^2.8.6",
     "dodopayments": "^2.43.0",
     "dotenv": "^17.4.2",
-    "express": "^4.21.0",
+    "express": "^4.21.2",
     "express-rate-limit": "^8.6.0",
     "firebase-admin": "^14.2.0",
     "helmet": "^8.3.0",
@@ -31,7 +31,7 @@
     "openai": "^6.48.0",
     "resend": "^6.17.2",
     "socket.io": "^4.8.3",
-    "ws": "^8.16.0",
+    "ws": "^8.18.0",
     "xss": "^1.0.15",
     "zod": "^3.22.4",
     "zod-express-middleware": "^1.4.0"

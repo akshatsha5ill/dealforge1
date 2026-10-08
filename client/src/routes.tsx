@@ -80,7 +80,11 @@ export const router = createBrowserRouter([
   },
   {
     path: '/zoom-panel',
-    element: <ZoomPanelLayout />,
+    element: (
+      <ProtectedRoute>
+        <ZoomPanelLayout />
+      </ProtectedRoute>
+    ),
     errorElement: <ErrorBoundary />,
     children: [
       { index: true, element: <Suspense fallback={<SuspenseFallback />}><TranscriptionView /></Suspense> },

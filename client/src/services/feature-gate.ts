@@ -1,5 +1,16 @@
 import { PLAN_CONFIGS, SubscriptionPlan } from '../types/billing';
 
+/**
+ * Client-side plan mirror — DISPLAY ONLY, never authoritative.
+ * - Server (Firestore subscription doc + requirePlan middleware) is the source
+ *   of truth and enforces every privileged API route. Client checks only hide
+ *   UI; bypassing them grants nothing without a server-side plan.
+ * - Fail-closed: unknown/null/undefined plans resolve to 'free' via getPlan().
+ *   Callers MUST call useStore.getState().ensureFreshSubscription() before
+ *   privileged actions (checkout, AI/email sends, exports) so stale state
+ *   cannot honor an expired/cancelled plan.
+ */
+
 export type FeatureKey =
   | 'emailOutreach'
   | 'pipeline'

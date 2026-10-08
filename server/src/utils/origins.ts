@@ -31,3 +31,31 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
   }
   return false;
 };
+
+// OAuth redirect re-validation (server M1): /start routes allowlist the
+// redirect host, but the callback must re-validate the echoed state redirect —
+// state is opaque to the IdP and can be swapped between start and callback.
+// Centralized so Zoom + email callbacks share one allowlist.
+export const isAllowedClientRedirect = (redirect: string | undefined | null): boolean => {
+  if (!redirect || typeof redirect !== 'string') return false;
+  try {
+    const parsed = new URL(redirect);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const allowedHosts = new Set<string>(['localhost', '127.0.0.1']);
+    const addHost = (url: string): void => {
+      try {
+        allowedHosts.add(new URL(url).hostname);
+      } catch {
+        // ignore malformed allowlist entries
+      }
+    };
+    addHost(config.clientUrl);
+    for (const o of getAllowedOrigins()) addHost(o);
+    return allowedHosts.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+};
+
+export const defaultClientRedirect = (path = '/settings'): string =>
+  `${config.clientUrl.replace(/\/$/, '')}${path}`;

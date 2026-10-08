@@ -1,13 +1,3 @@
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
-});
-
 import http from 'http';
 import { Server, Socket } from 'socket.io';
 import { app } from './app.js';
@@ -18,6 +8,20 @@ import log from './utils/logger.js';
 import { config } from './config.js';
 import { isAllowedOrigin } from './utils/origins.js';
 import { getFirebaseAuth } from './services/firebase-admin.js';
+import { sanitizeObject } from './utils/sanitize.js';
+
+// Redacted crash logger (server M9): never dump raw error objects — they can
+// carry request bodies, tokens, or env material. Message-only server-side.
+process.on('uncaughtException', (err) => {
+  log.error('Uncaught Exception', { error: err instanceof Error ? err.message : String(err) });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  log.error('Unhandled Rejection', { error: message });
+  process.exit(1);
+});
 
 const server = http.createServer(app);
 
@@ -77,7 +81,10 @@ const SAVE_NOTE_RATE_WINDOW_MS = 60 * 1000;
 const saveNoteTimestamps = new Map<string, number[]>();
 // Per-user global rate-limit bucket (uid -> timestamps) to prevent reconnect / multi-socket bypass.
 const saveNoteUserTimestamps = new Map<string, number[]>();
-const stripTags = (s: string): string => s.replace(/<[^>]*>/g, '');
+// Allowlist sanitize via shared FilterXSS (empty whitelist, strips script/
+// style/iframe/object/embed bodies). Regex tag-stripping alone leaves event
+// handlers / encoded payloads; reuse the HTTP sanitizeObject path.
+const stripTags = (s: string): string => sanitizeObject<string>(s);
 
 io.on('connection', (socket: Socket & { user?: Record<string, unknown> }) => {
   log.info('Client connected', { socketId: socket.id, uid: socket.user?.uid });

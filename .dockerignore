@@ -8,3 +8,7 @@ coverage
 .env.*
 !.env.example
 .DS_Store
+# Never ship tests or local artifacts into images (server M7).
+**/*.test.ts
+**/*.test.tsx
+npm-debug.log

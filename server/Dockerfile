@@ -14,11 +14,17 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+ENV NODE_ENV=production
+
 COPY package.json package-lock.json ./
 COPY server/package.json ./server/
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/server/dist/ ./server/dist/
+
+# Run as non-root (server M7): node:alpine ships a `node` user.
+RUN chown -R node:node /app
+USER node
 
 EXPOSE 3000
 

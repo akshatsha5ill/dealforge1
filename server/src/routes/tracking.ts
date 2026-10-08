@@ -19,6 +19,32 @@ const router = express.Router();
 // the stored mapping, else fall back to clientUrl. javascript:/data:/
 // vbscript: are always blocked; missing mapping denies to clientUrl.
 
+// Expiring tracking tokens (server M2): legacy perpetual `uid.sig` tokens
+// never expire, so a leaked pixel/click URL is a permanent beacon. New signs
+// emit `uid.exp.sig` (HMAC over `uid.exp`, 30-day TTL); verify accepts both
+// forms so previously sent emails keep working, but rejects expired stamps.
+// Campaign binding for clicks is enforced separately via the stored
+// click-target mapping (lookupClickTarget) — fail-closed to clientUrl.
+export const TRACKING_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const signTrackingUid = (uid: string): string => {
+  const secret = getTrackingSecret();
+  if (!secret) return config.isProd ? '' : uid;
+  const exp = Date.now() + TRACKING_TOKEN_TTL_MS;
+  const sig = crypto.createHmac('sha256', secret).update(`${uid}.${exp}`).digest('hex');
+  return `${uid}.${exp}.${sig}`;
+};
+
+const timingSafeEqualHex = (a: string, b: string): boolean => {
+  try {
+    const ba = Buffer.from(a, 'utf8');
+    const bb = Buffer.from(b, 'utf8');
+    return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
+};
+
 const verifyTrackingUid = (token?: string): string | null => {
   if (!token) return null;
   const secret = getTrackingSecret();
@@ -26,20 +52,23 @@ const verifyTrackingUid = (token?: string): string | null => {
   // means the raw uid was sent unsigned. Fail-closed in prod: reject
   // unsigned when no secret is configured.
   if (!secret) return config.isProd ? null : token;
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    const [uid, expRaw, sig] = parts;
+    const exp = Number(expRaw);
+    if (!uid || !Number.isFinite(exp)) return null;
+    if (Date.now() > exp) return null;
+    const expected = crypto.createHmac('sha256', secret).update(`${uid}.${expRaw}`).digest('hex');
+    return timingSafeEqualHex(sig, expected) ? uid : null;
+  }
+  // Legacy perpetual form `uid.sig` (pre-expiry rows): still accepted so old
+  // emails keep working, but all new sends carry exp above.
   const idx = token.lastIndexOf('.');
   if (idx <= 0) return null;
   const uid = token.slice(0, idx);
   const sig = token.slice(idx + 1);
   const expected = crypto.createHmac('sha256', secret).update(uid).digest('hex');
-  try {
-    const a = Buffer.from(sig, 'utf8');
-    const b = Buffer.from(expected, 'utf8');
-    if (a.length !== b.length) return null;
-    if (!crypto.timingSafeEqual(a, b)) return null;
-  } catch {
-    return null;
-  }
-  return uid;
+  return timingSafeEqualHex(sig, expected) ? uid : null;
 };
 
 const isSafeRedirect = (url: string): boolean => {
@@ -118,6 +147,12 @@ const lookupClickTarget = async (campaignId: string, hash: string): Promise<stri
 
 const initRedis = async () => {
   if (config.redis.url) {
+    // Server M8: require TLS (rediss://) in production so tracking event data
+    // never traverses the network in cleartext. Fail-closed to in-memory.
+    if (config.isProd && !config.redis.url.startsWith('rediss://')) {
+      log.error('Refusing non-TLS Redis URL in production; using in-memory tracking store');
+      return;
+    }
     try {
       const ioredis = await import('ioredis');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
