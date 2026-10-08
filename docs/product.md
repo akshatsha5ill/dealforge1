@@ -16,7 +16,7 @@ To streamline the sales workflow by automating CRM entry and lead follow-up dire
 Acts as a seamless assistant during and after Zoom meetings, bridging live call data (transcripts, notes) with automated downstream actions (drip campaigns, lead updates).
 
 ## Operating Context
-Used during live Zoom meetings via a side-panel for real-time transcription and suggestions, and accessed via a web dashboard for pipeline management, settings, and analytics. Meeting data is stored locally (IndexedDB) with optional user-approved directory backups for portability.
+Used during live Zoom meetings via a side-panel for real-time transcription and suggestions, and accessed via a web dashboard for pipeline management, settings, and analytics. Meeting data is stored locally (IndexedDB) with optional user-approved directory backups for portability; server holds only an ephemeral 24h relay buffer (see `server/src/services/buffer-service.ts`) plus Firestore identity docs (users, referrals, Zoom tokens).
 
 ## Capabilities and Constraints
 - Real-time Zoom transcription, suggestions, and notes.

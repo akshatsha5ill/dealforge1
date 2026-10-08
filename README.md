@@ -24,27 +24,30 @@ AI-powered Zoom Marketplace application for sales meeting intelligence, lead man
 | AI | OpenAI, Anthropic, Google Gemini (BYOK) |
 | Email | Resend, Gmail (OAuth), Outlook (Microsoft Graph OAuth) |
 | Payments | Dodo Payments |
-| Database | IndexedDB (client-side), optional Redis |
+| Database | IndexedDB/Dexie (client-side primary store), Firestore (users, referrals, Zoom tokens, opt-in sync), optional Redis (ephemeral buffer backend) |
 
 ## Architecture
 
-Privacy-first design — sensitive data stored client-side in IndexedDB. Backend acts as a stateless relay with 24h temporary buffer.
+Privacy-first design — meetings/transcripts/analyses live client-side in IndexedDB (Dexie `DealForgeDB`, `client/src/services/local-db/db.ts`). Backend holds an ephemeral 24h buffer (in-memory LRU, 10k entries max, per-meeting 2k segment cap, optional Redis dual-write — `server/src/services/buffer-service.ts:24`) plus persistent Firestore docs for identity (users, Zoom OAuth tokens, referrals, opt-in api-data sync). Transcripts expire via TTL and are never persisted server-side.
 
-Works with Zoom via the in-meeting panel, or standalone — paste or upload any transcript to get the same AI analysis.
+Works with Zoom via the in-meeting panel (`/zoom-panel` + `@zoom/appssdk` — `ZoomPanelLayout` degrades gracefully outside Zoom), or in the same web dashboard standalone — paste or upload any `.txt/.srt/.vtt` transcript (`ManualTranscriptModal` → IndexedDB, no Zoom required) to get the same AI analysis.
 
-Referrals: open the app with `?ref=DF-XXXXXXXX` to claim a referral code. Free users get +1 meeting analysis/month for 3 months per referral; Pro users get 1 month free credit. Codes are claimed server-side (Firestore, fails open), with benefits enforced in both the client limits and the server-side analysis limit middleware.
+Referrals: open the app with `?ref=DF-XXXXXXXX` to claim a referral code. Free users get +1 meeting analysis/month for 3 months per referral; Pro users get 1 month free credit. Codes are claimed server-side in Firestore (`server/src/services/referral-service.ts`): reads fail open (deterministic fallback), but `claimReferral` fails closed (Firestore error → `invalid_code`, no benefit; unverified email → 403), with benefits enforced in both the client limits and the server-side analysis limit middleware.
 
 API Access: Pro users can generate read-only API keys in Settings → API Access and enable derived-data sync (summaries, action items, lead scores — never transcripts). Endpoints: `GET /api/v1/meetings`, `GET /api/v1/meetings/:id`, `GET /api/v1/leads`, `GET /api/v1/deals`, authenticated with the `x-api-key` header (60 req/min).
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │   Zoom Panel    │────▶│   Express API    │────▶│   Firebase      │
-│   (Stateless)   │     │   (Relay)        │     │   (Auth Only)   │
+│ (/zoom-panel,   │     │ (Ephemeral 24h  │     │ (Auth +         │
+│  same SPA,      │     │  buffer +        │     │  Firestore)     │
+│  appssdk)       │     │  Socket.io)      │     │                 │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
                               │
 ┌─────────────────┐           │
 │  Web Dashboard  │───────────┘
-│  (IndexedDB)    │
+│  (IndexedDB,    │
+│   local-first)  │
 └─────────────────┘
 ```
 
@@ -54,7 +57,7 @@ API Access: Pro users can generate read-only API keys in Settings → API Access
 
 - Node.js 20+
 - npm
-- Firebase project (for authentication)
+- Firebase project (for Auth + Firestore)
 - Optional: Zoom Developer account, Resend API key, Dodo Payments account
 
 ### Installation
