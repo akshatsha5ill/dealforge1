@@ -7,41 +7,64 @@ import { getTrackingSecret } from '../utils/tracking-secret.js';
 const router = express.Router();
 
 // Parse HTML form posts (confirm button) without touching global parsers.
-router.use(express.urlencoded({ extended: false }));
+// Capped at 10kb (server M10): the default extended parser has no useful
+// bound for a 3-field confirm form.
+router.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // HMAC-signed email token (reuses tracking sign secret/algo).
-// Token forms accepted: raw hex HMAC(normalized-email), or signed
-// `email.sig` (tracking sign style). Fail-closed in prod when no secret is
-// configured (mirrors tracking.ts): reject instead of allowing any token to
-// mass-suppress anyone. In non-prod, allow unsigned for dev/test.
+// Token forms accepted:
+//   1. `exp.sig` (new, expiring — server M2): sig = HMAC(`${email}.${exp}`),
+//      exp = epoch ms; rejected when expired. Perpetual tokens are a permanent
+//      mass-suppress capability if leaked, so all new sends carry an expiry.
+//   2. raw hex HMAC(normalized-email) or signed `email.sig` (legacy,
+//      perpetual — accepted so previously sent emails keep working).
+// Fail-closed in prod when no secret is configured (mirrors tracking.ts):
+// reject instead of allowing any token to mass-suppress anyone. In non-prod,
+// allow unsigned for dev/test.
+export const UNSUBSCRIBE_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const signUnsubscribeToken = (email: string): string => {
+  const secret = getTrackingSecret();
+  if (!secret) return '';
+  const normalized = email.trim().toLowerCase();
+  const exp = Date.now() + UNSUBSCRIBE_TOKEN_TTL_MS;
+  const sig = crypto.createHmac('sha256', secret).update(`${normalized}.${exp}`).digest('hex');
+  return `${exp}.${sig}`;
+};
+
+const timingSafeEqualStr = (a: string, b: string): boolean => {
+  try {
+    const ba = Buffer.from(a, 'utf8');
+    const bb = Buffer.from(b, 'utf8');
+    return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
+};
 
 function verifyEmailToken(email: string, token: string): boolean {
-  if (!token) return false;
+  if (!token || !email) return false;
   const secret = getTrackingSecret();
   if (!secret) return config.isProd ? false : true;
   const normalized = email.trim().toLowerCase();
-  const expected = crypto.createHmac('sha256', secret).update(normalized).digest('hex');
-  try {
-    const a = Buffer.from(token, 'utf8');
-    const b = Buffer.from(expected, 'utf8');
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
-  } catch {
-    // fall through to signed-email form
+  const parts = token.split('.');
+  // New expiring form `exp.sig`.
+  if (parts.length === 2 && /^\d{10,}$/.test(parts[0])) {
+    const exp = Number(parts[0]);
+    if (!Number.isFinite(exp) || Date.now() > exp) return false;
+    const expected = crypto.createHmac('sha256', secret).update(`${normalized}.${parts[0]}`).digest('hex');
+    return timingSafeEqualStr(parts[1], expected);
   }
+  const expected = crypto.createHmac('sha256', secret).update(normalized).digest('hex');
+  if (timingSafeEqualStr(token, expected)) return true;
   const idx = token.lastIndexOf('.');
   if (idx > 0) {
     const tokenEmail = token.slice(0, idx).trim().toLowerCase();
     const sig = token.slice(idx + 1);
     if (tokenEmail === normalized) {
-      try {
-        const a = Buffer.from(sig, 'utf8');
-        const b = Buffer.from(expected, 'utf8');
-        if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
-      } catch {
-        return false;
-      }
+      return timingSafeEqualStr(sig, expected);
     }
   }
   return false;

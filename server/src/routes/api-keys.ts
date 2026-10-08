@@ -1,12 +1,19 @@
 import express, { Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { validateRequest } from 'zod-express-middleware';
+import { validateRequest } from '../middleware/validateRequest.js';
 import { verifyAuth, AuthRequest } from '../middleware/auth.js';
 import { requirePlan } from '../middleware/plan.js';
 import { createApiKey, listApiKeys, revokeApiKey } from '../services/api-key-service.js';
 import { AppError } from '../middleware/errorHandler.js';
 
 const router = express.Router();
+
+// Defense-in-depth: enforce auth at the router (app.ts also mounts
+// verifyAuth). Skip when a user is already attached.
+router.use((req, res, next) => {
+  if ((req as unknown as { user?: { uid?: string } }).user?.uid) return next();
+  return verifyAuth(req as unknown as Parameters<typeof verifyAuth>[0], res, next);
+});
 
 const createKeySchema = z.object({
   name: z.string().min(1).max(60).optional(),
@@ -52,6 +59,7 @@ router.get(
 
 router.delete(
   '/:keyHash',
+  validateRequest({ params: z.object({ keyHash: z.string().regex(/^[a-f0-9]{64}$/, 'Invalid keyHash') }) }),
   async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const uid = req.user?.uid;

@@ -102,7 +102,8 @@ router.post(
 
 const scoreSchema = z.object({
   transcript: z.string().min(10).max(100000, "Transcript too long"),
-  leadContext: z.record(z.any()),
+  // Strict lead-context shape (server M6): see routes/email.ts draftSchema.
+  leadContext: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).max(50),
   meetingId: z.string().min(1).optional(),
   meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),

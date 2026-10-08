@@ -1,6 +1,8 @@
 import express, { Response, NextFunction } from 'express';
+import { z } from 'zod';
 import { apiKeyAuth } from '../middleware/apiKeyAuth.js';
 import { AuthRequest } from '../middleware/auth.js';
+import { validateRequest } from '../middleware/validateRequest.js';
 import {
   getMeetingsWithAnalyses,
   getMeetingDetail,
@@ -12,6 +14,12 @@ import { AppError } from '../middleware/errorHandler.js';
 const router = express.Router();
 
 router.use(apiKeyAuth);
+
+// Firestore doc() injection guard: meeting ids become collection doc ids.
+// Restrict to alphanumerics, dash, underscore (no `/`, `.`, `..` traversal).
+const MEETING_ID_PARAMS = z.object({
+  id: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid id'),
+});
 
 router.get(
   '/meetings',
@@ -31,6 +39,7 @@ router.get(
 
 router.get(
   '/meetings/:id',
+  validateRequest({ params: MEETING_ID_PARAMS }),
   async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const uid = req.user?.uid;

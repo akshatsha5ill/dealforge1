@@ -6,6 +6,7 @@ import { verifyAuth, AuthRequest } from '../middleware/auth.js';
 import { requirePlan } from '../middleware/plan.js';
 import log from '../utils/logger.js';
 import { config } from '../config.js';
+import { defaultClientRedirect, isAllowedClientRedirect } from '../utils/origins.js';
 import {
   EmailProvider,
   isValidProvider,
@@ -89,7 +90,11 @@ router.get('/:provider/callback', async (req: Request, res: Response, next: expr
 
   try {
     const { redirect, email } = await handleOAuthCallback(provider, code, state);
-    const callbackUrl = new URL(redirect);
+    // Server M1: re-validate the state redirect at the callback (not just at
+    // /start) against the client allowlist; fall back to the default settings
+    // page instead of echoing an attacker-swapped URL.
+    const safeRedirect = isAllowedClientRedirect(redirect) ? redirect : defaultClientRedirect();
+    const callbackUrl = new URL(safeRedirect);
     callbackUrl.searchParams.set('oauth_success', 'true');
     callbackUrl.searchParams.set('provider', provider);
     callbackUrl.searchParams.set('email', email);

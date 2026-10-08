@@ -40,19 +40,50 @@ const getTrackingBaseUrl = (req: Request): string => {
   return `${protocol}://${host}/api/tracking`;
 };
 
-const signTrackingUid = (uid: string): string => {
-  const secret = getTrackingSecret();
-  // Fail-closed in prod: never emit a raw Firebase uid in email URLs/logs and
-  // never emit forgeable tracking tokens. Mirrors tracking.ts verify (which
-  // rejects unsigned uids in prod) and getTrackingBaseUrl above.
-  if (!secret) {
-    if (config.isProd || process.env.NODE_ENV === 'production') {
-      throw new AppError('TRACKING_SECRET is not configured.', 500);
-    }
-    return uid;
+// Fail-closed wrapper around the shared expiring signer (tracking.ts):
+// never emit a raw uid or forgeable token. Throws in prod when no secret.
+const signTrackingUidOrThrow = (uid: string): string => {
+  const token = signTrackingUid(uid);
+  if (!token) {
+    throw new AppError('TRACKING_SECRET is not configured.', 500);
   }
-  const sig = crypto.createHmac('sha256', secret).update(uid).digest('hex');
-  return `${uid}.${sig}`;
+  return token;
+};
+
+// Server M4: caller-supplied unsubscribeUrl is attacker-controlled (any authed
+// Pro user). Only allow https URLs on the client/tracking/unsubscribe hosts;
+// anything else is dropped and the server-signed URL is used instead
+// (normalizeBulkContext builds it when unsubscribeUrl is undefined).
+const resolveUnsubscribeUrl = (provided: unknown): string | undefined => {
+  if (!provided || typeof provided !== 'string') return undefined;
+  try {
+    const parsed = new URL(provided);
+    if (parsed.protocol !== 'https:') {
+      log.warn('Rejecting non-https unsubscribeUrl; using server-signed URL');
+      return undefined;
+    }
+    const allowed = new Set<string>();
+    for (const base of [
+      config.clientUrl,
+      (process.env.TRACKING_BASE_URL || '').trim(),
+      (process.env.UNSUBSCRIBE_BASE_URL || '').trim(),
+      (process.env.API_BASE_URL || '').trim(),
+    ]) {
+      if (!base) continue;
+      try {
+        allowed.add(new URL(base).hostname);
+      } catch {
+        // ignore malformed base envs
+      }
+    }
+    if (!allowed.has(parsed.hostname)) {
+      log.warn('Rejecting unsubscribeUrl outside allowlist; using server-signed URL');
+      return undefined;
+    }
+    return provided;
+  } catch {
+    return undefined;
+  }
 };
 
 const sendSchema = z.object({
@@ -113,6 +144,9 @@ router.post(
       const { to, subject, body, campaignId, unsubscribeUrl, replyTo, isBulk, trackingConsent, via = 'resend' } = req.body;
       // Header-first: keeps the BYO key out of req.body (logs, Sentry payloads).
       const emailApiKey = (req.header('x-email-api-key') || (req.body.emailApiKey as string) || '').trim();
+      // Server M4: attacker-controlled unsubscribeUrl is allowlisted; anything
+      // else falls back to the server-signed URL (built in email-service).
+      const safeUnsubscribeUrl = resolveUnsubscribeUrl(unsubscribeUrl);
       delete req.body.emailApiKey;
       delete req.body.via;
       const uid = req.user?.uid;
@@ -141,7 +175,7 @@ router.post(
       
       if (campaignId && uid) {
         const trackingBase = getTrackingBaseUrl(req);
-        const trackingUid = encodeURIComponent(signTrackingUid(uid));
+        const trackingUid = encodeURIComponent(signTrackingUidOrThrow(uid));
         // Forward sender-supplied consent to tracking.ts (`?consent=1`).
         // Absent/false = no flag = tracking defaults off (not stored).
         const consentSuffix = trackingConsent ? '&consent=1' : '';
@@ -173,12 +207,12 @@ router.post(
           throw new AppError('Unauthorized', 401);
         }
         const { accessToken } = await getValidAccessToken(uid, via);
-        const bulkOptions = { campaignId, unsubscribeUrl, replyTo, isBulk };
+        const bulkOptions = { campaignId, unsubscribeUrl: safeUnsubscribeUrl, replyTo, isBulk };
         data = via === 'gmail'
           ? await sendViaGmail(accessToken, to, subject, finalBody, undefined, bulkOptions)
           : await sendViaOutlook(accessToken, to, subject, finalBody, undefined, bulkOptions);
       } else {
-        data = await sendDraft(to, subject, finalBody, { apiKey: emailApiKey || undefined, campaignId, unsubscribeUrl, replyTo, isBulk });
+        data = await sendDraft(to, subject, finalBody, { apiKey: emailApiKey || undefined, campaignId, unsubscribeUrl: safeUnsubscribeUrl, replyTo, isBulk });
       }
       return res.status(200).json({ status: "success", data });
     } catch (error) {
@@ -189,7 +223,10 @@ router.post(
 
 const draftSchema = z.object({
   transcript: z.string({ required_error: "invalid input" }).min(10, "invalid input").max(100000, "invalid input"),
-  leadContext: z.record(z.any()).optional(),
+  // Strict lead-context shape (server M6): arbitrary nested objects
+  // (z.record(z.any())) can smuggle oversized/unbounded payloads past
+  // validation into providers and logs. Flat scalar map, capped at 50 keys.
+  leadContext: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).max(50).optional(),
   meetingStartTime: z.string().min(1, "Missing meeting start time").optional(),
   model: z.enum(['openai', 'anthropic', 'gemini']).optional(),
   // BYO key travels in the x-ai-api-key header (never the body). Body key

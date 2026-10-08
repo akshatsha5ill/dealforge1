@@ -36,6 +36,8 @@ import {
   syncLimiter,
   publicApiLimiter,
   emailWebhookLimiter,
+  oauthCallbackLimiter,
+  unsubscribeLimiter,
 } from './middleware/rateLimits.js';
 
 import fs from 'node:fs';
@@ -46,13 +48,18 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 if (config.isProd && process.env.SENTRY_DSN) {
+  // Denylist covers API keys, secrets, tokens, passwords, credentials,
+  // session material, and PII-ish content that must never leave the host in
+  // Sentry payloads (BYO keys travel in headers — redact wherever captured).
+  const SENSITIVE_KEY_RE = /api[-_]?key|x-[a-z-]*api[-_]?key|secret|token|password|passwd|pwd|credential|session|auth|bearer|private[-_]?key|client[-_]?secret|transcript|email/i;
+  const SENSITIVE_HEADER_RE = /api[-_]?key|x-[a-z-]*api[-_]?key|authorization|cookie|set-cookie|secret|token|password|credential|session|auth/i;
   const scrub = (obj: unknown): unknown => {
     if (typeof obj === 'string') return obj.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]');
     if (!obj || typeof obj !== 'object') return obj;
     if (Array.isArray(obj)) return obj.map(scrub);
     const out: Record<string, unknown> = { ...(obj as Record<string, unknown>) };
     for (const k of Object.keys(out)) {
-      if (/api[-_]?key|transcript|email/i.test(k)) out[k] = '[Redacted]';
+      if (SENSITIVE_KEY_RE.test(k)) out[k] = '[Redacted]';
       else out[k] = scrub(out[k]);
     }
     return out;
@@ -63,12 +70,14 @@ if (config.isProd && process.env.SENTRY_DSN) {
     beforeSend(event) {
       if (event.request?.data) event.request.data = scrub(event.request.data) as typeof event.request.data;
       if (event.extra) event.extra = scrub(event.extra) as typeof event.extra;
+      if (event.contexts) event.contexts = scrub(event.contexts) as typeof event.contexts;
+      if (event.user) event.user = scrub(event.user) as typeof event.user;
       // BYO keys travel in headers — redact them (and auth material) wherever
       // the SDK captured them.
       const headers = (event.request as { headers?: Record<string, unknown> } | undefined)?.headers;
       if (headers && typeof headers === 'object') {
         for (const k of Object.keys(headers)) {
-          if (/api[-_]?key|authorization|cookie|set-cookie/i.test(k)) headers[k] = '[Redacted]';
+          if (SENSITIVE_HEADER_RE.test(k)) headers[k] = '[Redacted]';
         }
       }
       return event;
@@ -113,12 +122,14 @@ app.use(express.json({ limit: '100kb', verify: (req, _res, buf) => { (req as Raw
 app.use(sanitize);
 app.use('/api', apiLimiter);
 
-const SENSITIVE_QUERY_RE = /([?&])(token|code|state|api[-_]?key|x-[a-z-]*api[-_]?key|secret)(=[^&#]*)/gi;
+const SENSITIVE_QUERY_RE = /([?&])(token|code|state|uid|sig|h|email|campaign|redirect|unsubscribe|api[-_]?key|x-[a-z-]*api[-_]?key|secret)(=[^&#]*)/gi;
 
 // Redact single-use credentials / tokens in query strings (?token=, ?code=,
-// ?state=, api keys). The WS handshake rejects query tokens and requires
-// auth.token, but polling URLs + proxies log the raw query — never persist
-// the secret itself.
+// ?state=, api keys, tracking uids/signatures, unsubscribe emails/tokens).
+// The WS handshake rejects query tokens and requires auth.token, but polling
+// URLs + proxies log the raw query — never persist the secret itself.
+// Tracking/unsubscribe links carry HMAC tokens + PII by design; logs keep
+// the param names, never the values.
 function redactSensitiveQuery(url: string): string {
   return url.replace(SENSITIVE_QUERY_RE, '$1$2=[Redacted]');
 }
@@ -149,9 +160,12 @@ app.use('/api/billing/webhook', billingLimiter, (req, res, next) => {
 app.use('/api/billing', verifyAuth, billingLimiter, billingRoutes);
 app.use('/api/referrals', verifyAuth, referralLimiter, referralRoutes);
 app.use('/api/tracking', trackingLimiter, trackingRoutes);
-app.use('/unsubscribe', trackingLimiter, unsubscribeRoutes);
+// Public one-click unsubscribe (no auth by design) gets its own 30/min bucket
+// (server M3) — not the high-volume tracking-pixel bucket.
+app.use('/unsubscribe', unsubscribeLimiter, unsubscribeRoutes);
 app.use('/api/ai', verifyAuth, aiLimiter, aiRoutes);
-app.use('/api/email/oauth', billingLimiter, emailOAuthRoutes);
+// OAuth start + callback share the tight 10/min code-exchange bucket.
+app.use('/api/email/oauth', oauthCallbackLimiter, emailOAuthRoutes);
 app.use('/api/email/webhooks', emailWebhookLimiter, emailWebhooksRoutes);
 app.use('/api/email', verifyAuth, requirePlan('pro'), emailLimiter, emailRoutes);
 app.use('/api/api-keys', verifyAuth, apiKeyLimiter, apiKeyRoutes);
@@ -180,7 +194,9 @@ app.get('/api/docs', (req, res) => {
 });
 
 app.get('/zoomverify/verifyzoom.html', trackingLimiter, (req, res) => {
-  res.setHeader('Content-Type', 'text/html');
+  // Served as plain text (server M10): the token is not HTML, and text/html
+  // would execute markup if the env value ever contained any.
+  res.type('text/plain');
   res.send(process.env.ZOOM_VERIFY_TOKEN || 'zoomverify token not configured');
 });
 

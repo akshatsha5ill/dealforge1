@@ -11,6 +11,8 @@ import { AppError } from '../middleware/errorHandler.js';
 import log from '../utils/logger.js';
 import zoomRTMS from '../services/zoom-rtms.js';
 import transcriptAnalysisPipeline from '../services/transcript-analysis-pipeline.js';
+import { emailWebhookLimiter, oauthCallbackLimiter } from '../middleware/rateLimits.js';
+import { defaultClientRedirect, isAllowedClientRedirect } from '../utils/origins.js';
 import { encrypt, decrypt, CryptoPurpose } from '../utils/crypto.js';
 import { FieldValue } from 'firebase-admin/firestore';
 
@@ -197,7 +199,7 @@ router.get('/oauth/status', verifyAuth, async (req: AuthRequest, res: Response):
   }
 });
 
-router.get('/oauth/callback', async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
+router.get('/oauth/callback', oauthCallbackLimiter, async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
   const { code, state } = req.query;
   if (!code) {
     return next(new AppError('Missing authorization code', 400));
@@ -328,9 +330,14 @@ router.get('/oauth/callback', async (req: Request, res: Response, next: express.
       }, { merge: true });
     }
 
-    // Browser redirect flow: send the user back to the client
+    // Browser redirect flow: send the user back to the client.
+    // Server M1: re-validate the state redirect at the callback (not just at
+    // /oauth/start) against the client allowlist; fall back to the default
+    // settings page instead of echoing an attacker-swapped URL.
     if (stateUid) {
-      const base = stateRedirect || `${config.clientUrl}/settings`;
+      const base = (stateRedirect && isAllowedClientRedirect(stateRedirect))
+        ? stateRedirect
+        : defaultClientRedirect();
       const sep = base.includes('?') ? '&' : '?';
       return res.redirect(302, `${base}${sep}zoom_linked=true`);
     }
@@ -435,7 +442,7 @@ export async function getValidZoomAccessToken(uid: string): Promise<string> {
   return accessToken;
 }
 
-router.post('/webhook', async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
+router.post('/webhook', emailWebhookLimiter, async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
   const secret = process.env.ZOOM_WEBHOOK_SECRET_TOKEN || config.zoom.webhookSecretToken;
 
   if (!secret) {
@@ -468,9 +475,15 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
 
   switch (event) {
     case 'endpoint.url_validation': {
-      const hashForValidate = crypto.createHmac('sha256', secret).update(payload.plainToken).digest('hex');
+      // Server M11: payload/plainToken are attacker-influenced JSON — validate
+      // before touching them (missing object used to throw on .plainToken).
+      const plainToken: unknown = (payload as { plainToken?: unknown } | undefined)?.plainToken;
+      if (typeof plainToken !== 'string' || !plainToken || plainToken.length > 512) {
+        return next(new AppError('Invalid validation payload', 400));
+      }
+      const hashForValidate = crypto.createHmac('sha256', secret).update(plainToken).digest('hex');
       res.status(200).json({
-        plainToken: payload.plainToken,
+        plainToken,
         encryptedToken: hashForValidate
       });
       return;
@@ -582,7 +595,7 @@ router.post('/webhook', async (req: Request, res: Response, next: express.NextFu
   return res.status(200).json({ status: 'ok' });
 });
 
-router.post('/deauth', async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
+router.post('/deauth', emailWebhookLimiter, async (req: Request, res: Response, next: express.NextFunction): Promise<unknown> => {
   const secret = config.zoom.webhookSecretToken;
 
   if (!secret) {

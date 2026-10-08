@@ -88,16 +88,23 @@ describe('api-keys routes', () => {
   describe('DELETE /api-keys/:keyHash', () => {
     it('revokes the key', async () => {
       vi.mocked(revokeApiKey).mockResolvedValue(true);
-      const res = await request(createApp('user-1'), '/api-keys/abc123', { method: 'DELETE' });
+      const keyHash = 'a'.repeat(64);
+      const res = await request(createApp('user-1'), `/api-keys/${keyHash}`, { method: 'DELETE' });
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.revoked).toBe(true);
-      expect(revokeApiKey).toHaveBeenCalledWith('user-1', 'abc123');
+      expect(revokeApiKey).toHaveBeenCalledWith('user-1', keyHash);
+    });
+
+    it('returns 400 for a malformed keyHash (doc injection guard)', async () => {
+      const res = await request(createApp('user-1'), '/api-keys/abc123', { method: 'DELETE' });
+      expect(res.status).toBe(400);
+      expect(revokeApiKey).not.toHaveBeenCalled();
     });
 
     it('returns 404 when the key is not found', async () => {
       vi.mocked(revokeApiKey).mockResolvedValue(false);
-      const res = await request(createApp('user-1'), '/api-keys/nope', { method: 'DELETE' });
+      const res = await request(createApp('user-1'), `/api-keys/${'b'.repeat(64)}`, { method: 'DELETE' });
       expect(res.status).toBe(404);
     });
   });

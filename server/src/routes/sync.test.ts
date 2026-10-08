@@ -7,6 +7,10 @@ vi.mock('../services/api-data-service.js', () => ({
   syncDerivedData: vi.fn(),
 }));
 
+vi.mock('../middleware/plan.js', () => ({
+  requirePlan: () => (_req: any, _res: any, next: any) => next(),
+}));
+
 import { syncDerivedData } from '../services/api-data-service.js';
 
 function createApp(uid: string | null) {

@@ -9,6 +9,13 @@ import log from '../utils/logger.js';
 
 const router = express.Router();
 
+// Defense-in-depth: enforce auth at the router (app.ts also mounts
+// verifyAuth). Skip when a user is already attached.
+router.use((req, res, next) => {
+  if ((req as unknown as { user?: { uid?: string } }).user?.uid) return next();
+  return verifyAuth(req as unknown as Parameters<typeof verifyAuth>[0], res, next);
+});
+
 const claimSchema = z.object({
   code: z.string().min(1).max(32),
 });
